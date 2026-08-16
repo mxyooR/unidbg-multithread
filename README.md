@@ -2,6 +2,10 @@
 
 Allows you to emulate an Android native library, and an experimental iOS emulation.<br>
 
+This fork is maintained on the `v0.9.8` line. The changes in this branch are
+generic runtime and backend changes; application-specific examples and assets
+are intentionally outside the scope of the fork.
+
 This is an educational project to learn more about the ELF/MachO file format and ARM assembly.<br>
 
 Use it at your own risk !
@@ -49,6 +53,10 @@ Simple tests under src/test directory
 
 See [docs/single-backend-multithreading.md](docs/single-backend-multithreading.md)
 for the execution model, configuration, and limitations.
+
+The Unicorn JNI bridge uses the checked-in platform binaries under
+`backend/unicorn2/src/main/resources/natives`. The Java build packages these
+artifacts as-is; rebuilding the native library is not part of the Maven build.
 
 ## Thanks
 - [unicorn](https://github.com/zhkl0228/unicorn)
