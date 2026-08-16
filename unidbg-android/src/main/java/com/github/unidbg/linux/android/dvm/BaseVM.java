@@ -9,6 +9,8 @@ import com.github.unidbg.linux.android.dvm.apk.Apk;
 import com.github.unidbg.linux.android.dvm.apk.ApkFactory;
 import com.github.unidbg.linux.android.dvm.apk.AssetResolver;
 import com.github.unidbg.spi.LibraryFile;
+import com.github.unidbg.thread.InvocationRecord;
+import com.github.unidbg.thread.InvocationReferenceScope;
 import net.dongliu.apk.parser.bean.CertificateMeta;
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
@@ -141,14 +143,7 @@ public abstract class BaseVM implements VM, DvmClassFactory {
     }
 
     final int addObject(DvmObject<?> object, boolean global, boolean weak) {
-        int hash = object.hashCode();
-        if (log.isDebugEnabled()) {
-            log.debug("addObject hash=0x" + Long.toHexString(hash) + ", global=" + global);
-        }
-        Object value = object.getValue();
-        if (value instanceof DvmAwareObject) {
-            ((DvmAwareObject) value).initializeDvm(emulator, this, object);
-        }
+        int hash = prepareObjectReference(object);
         if (global) {
             ObjRef old = weak ? weakGlobalObjectMap.get(hash) : globalObjectMap.get(hash);
             if (old == null) {
@@ -167,13 +162,62 @@ public abstract class BaseVM implements VM, DvmClassFactory {
         return hash;
     }
 
+    private int prepareObjectReference(DvmObject<?> object) {
+        int hash = object.hashCode();
+        if (log.isDebugEnabled()) {
+            log.debug("addObject hash=0x" + Long.toHexString(hash));
+        }
+        Object value = object.getValue();
+        if (value instanceof DvmAwareObject) {
+            ((DvmAwareObject) value).initializeDvm(emulator, this, object);
+        }
+        return hash;
+    }
+
     @Override
     public final int addLocalObject(DvmObject<?> object) {
         if (object == null) {
             return JNI_NULL;
         }
 
+        InvocationLocalReferenceScope scope = currentInvocationReferenceScope();
+        if (scope != null) {
+            return scope.addLocalObject(object);
+        }
+
         return addObject(object, false, false);
+    }
+
+    private InvocationLocalReferenceScope currentInvocationReferenceScope() {
+        InvocationRecord invocation = emulator.getThreadDispatcher().getRunningInvocation();
+        if (invocation == null) {
+            return null;
+        }
+        InvocationReferenceScope existing = invocation.getReferenceScope();
+        if (existing != null) {
+            if (!(existing instanceof InvocationLocalReferenceScope)
+                    || !((InvocationLocalReferenceScope) existing).belongsTo(this)) {
+                throw new IllegalStateException("invocation reference scope belongs to another VM");
+            }
+            return (InvocationLocalReferenceScope) existing;
+        }
+        InvocationLocalReferenceScope created = new InvocationLocalReferenceScope(this);
+        if (invocation.installReferenceScope(created)) {
+            return created;
+        }
+        existing = invocation.getReferenceScope();
+        if (!(existing instanceof InvocationLocalReferenceScope)
+                || !((InvocationLocalReferenceScope) existing).belongsTo(this)) {
+            throw new IllegalStateException("unable to install invocation reference scope");
+        }
+        return (InvocationLocalReferenceScope) existing;
+    }
+
+    final int addObjectToInvocationScope(DvmObject<?> object,
+                                         Map<Integer, ObjRef> references) {
+        int hash = prepareObjectReference(object);
+        references.put(hash, new ObjRef(object, false));
+        return hash;
     }
 
     @Override
@@ -188,12 +232,30 @@ public abstract class BaseVM implements VM, DvmClassFactory {
     @SuppressWarnings("unchecked")
     @Override
     public final <T extends DvmObject<?>> T getObject(int hash) {
-        ObjRef ref;
-        if (localObjectMap.containsKey(hash)) {
-            ref = localObjectMap.get(hash);
-        } else if(globalObjectMap.containsKey(hash)) {
+        InvocationLocalReferenceScope scope = currentInvocationReferenceScope();
+        ObjRef ref = scope == null ? localObjectMap.get(hash) : scope.getLocalReference(hash);
+        if (ref == null && globalObjectMap.containsKey(hash)) {
             ref = globalObjectMap.get(hash);
         } else {
+            if (ref == null) {
+                ref = weakGlobalObjectMap.get(hash);
+            }
+        }
+        return ref == null ? null : (T) ref.obj;
+    }
+
+    @SuppressWarnings("unchecked")
+    final <T extends DvmObject<?>> T getInvocationObject(InvocationReferenceScope scope,
+                                                          int hash) {
+        if (!(scope instanceof InvocationLocalReferenceScope)
+                || !((InvocationLocalReferenceScope) scope).belongsTo(this)) {
+            throw new IllegalArgumentException("scope does not belong to this VM");
+        }
+        ObjRef ref = ((InvocationLocalReferenceScope) scope).getLocalReference(hash);
+        if (ref == null) {
+            ref = globalObjectMap.get(hash);
+        }
+        if (ref == null) {
             ref = weakGlobalObjectMap.get(hash);
         }
         return ref == null ? null : (T) ref.obj;
@@ -205,6 +267,10 @@ public abstract class BaseVM implements VM, DvmClassFactory {
     }
 
     final void deleteLocalRefs() {
+        if (currentInvocationReferenceScope() != null) {
+            // Invocation cleanup is owned by carrier retirement plus outcome acknowledgement.
+            return;
+        }
         for (ObjRef ref : localObjectMap.values()) {
             ref.obj.onDeleteRef();
         }
@@ -213,6 +279,12 @@ public abstract class BaseVM implements VM, DvmClassFactory {
         if (throwable != null) {
             throwable.onDeleteRef();
             throwable = null;
+        }
+    }
+
+    final void deleteInvocationLocalRefs(Map<Integer, ObjRef> references) {
+        for (ObjRef ref : references.values()) {
+            ref.obj.onDeleteRef();
         }
     }
 
