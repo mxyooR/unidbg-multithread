@@ -6,6 +6,13 @@ This fork is maintained on the `v0.9.8` line. The changes in this branch are
 generic runtime and backend changes; application-specific examples and assets
 are intentionally outside the scope of the fork.
 
+## Development status
+
+The generic Invocation-Owned Runtime migration is currently under development.
+The branch currently contains the foundational single-backend task dispatch and
+native timeslice work; invocation identity, exact terminal ownership, and
+invocation-scoped JNI lifetime are still being migrated and may change.
+
 This is an educational project to learn more about the ELF/MachO file format and ARM assembly.<br>
 
 Use it at your own risk !
@@ -47,9 +54,9 @@ Simple tests under src/test directory
 - Support [dynarmic](https://github.com/MerryMage/dynarmic) fast backend.
 - Support Apple M1 hypervisor, the fastest ARM64 backend.
 - Support Linux KVM backend with Raspberry Pi B4.
-- Optional single-backend multi-thread dispatch for ARM32 and ARM64. Host threads
-  submit guest worker tasks to the dispatcher, which preserves deterministic
-  backend ownership and uses task-local CPU context and stacks.
+- Foundational single-backend task dispatch for ARM32 and ARM64. Host threads
+  can submit guest worker tasks to one dispatcher-owned backend with task-local
+  CPU context and stacks.
 
 See [docs/single-backend-multithreading.md](docs/single-backend-multithreading.md)
 for the execution model, configuration, and limitations.
