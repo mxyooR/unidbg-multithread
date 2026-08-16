@@ -1,11 +1,12 @@
 package com.github.unidbg.linux.thread;
 
 import com.github.unidbg.Emulator;
+import com.github.unidbg.thread.AddressedWaiter;
 import com.sun.jna.Pointer;
 import unicorn.Arm64Const;
 import unicorn.ArmConst;
 
-public abstract class FutexWaiter extends AndroidWaiter {
+public abstract class FutexWaiter extends AndroidWaiter implements AddressedWaiter {
 
     private final Pointer uaddr;
     private final int val;
@@ -47,6 +48,22 @@ public abstract class FutexWaiter extends AndroidWaiter {
         } else {
             return false;
         }
+    }
+
+    @Override
+    public final long getWaitAddress() {
+        return Pointer.nativeValue(uaddr);
+    }
+
+    @Override
+    public final int getExpectedValue() {
+        return val;
+    }
+
+    @Override
+    public String toString() {
+        return getClass().getSimpleName() + "@0x" + Long.toHexString(getWaitAddress())
+                + "(expected=0x" + Integer.toHexString(val) + ")";
     }
 
 }

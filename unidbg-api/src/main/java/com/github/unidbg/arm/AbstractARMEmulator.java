@@ -21,6 +21,8 @@ import com.github.unidbg.spi.Dlfcn;
 import com.github.unidbg.spi.SyscallHandler;
 import com.github.unidbg.thread.Entry;
 import com.github.unidbg.thread.Function32;
+import com.github.unidbg.thread.NativeWorkerTask32;
+import com.github.unidbg.thread.UniThreadDispatcher;
 import com.github.unidbg.unix.UnixSyscallHandler;
 import com.github.unidbg.unwind.SimpleARMUnwinder;
 import com.github.unidbg.unwind.Unwinder;
@@ -252,6 +254,11 @@ public abstract class AbstractARMEmulator<T extends NewFileIO> extends AbstractE
 
     @Override
     public Number eFunc(long begin, Number... arguments) {
+        if (getThreadDispatcher() instanceof UniThreadDispatcher
+                && ((UniThreadDispatcher) getThreadDispatcher()).isDispatchingOnOtherThread()) {
+            return runThreadForResult(new NativeWorkerTask32(getPid(), begin, LR,
+                    isPaddingArgument(), arguments));
+        }
         return runMainForResult(new Function32(getPid(), begin, LR, isPaddingArgument(), arguments));
     }
 

@@ -307,6 +307,15 @@ class Unicorn2Backend extends AbstractBackend implements Backend {
         if ((type & UnicornConst.UC_HOOK_MEM_FETCH_UNMAPPED) != 0) {
             hookEventMem(callback, UnicornConst.UC_HOOK_MEM_FETCH_UNMAPPED, user_data, EventMemHook.UnmappedType.Fetch);
         }
+        if ((type & UnicornConst.UC_HOOK_MEM_READ_PROT) != 0) {
+            hookEventMem(callback, UnicornConst.UC_HOOK_MEM_READ_PROT, user_data, EventMemHook.UnmappedType.ReadProtected);
+        }
+        if ((type & UnicornConst.UC_HOOK_MEM_WRITE_PROT) != 0) {
+            hookEventMem(callback, UnicornConst.UC_HOOK_MEM_WRITE_PROT, user_data, EventMemHook.UnmappedType.WriteProtected);
+        }
+        if ((type & UnicornConst.UC_HOOK_MEM_FETCH_PROT) != 0) {
+            hookEventMem(callback, UnicornConst.UC_HOOK_MEM_FETCH_PROT, user_data, EventMemHook.UnmappedType.FetchProtected);
+        }
     }
 
     private void hookEventMem(final EventMemHook callback, final int type, Object user_data, final EventMemHook.UnmappedType unmappedType) {
@@ -442,5 +451,45 @@ class Unicorn2Backend extends AbstractBackend implements Backend {
         } else {
             unHook = unicorn.registerEmuCountHook(emu_count);
         }
+    }
+
+    @Override
+    public void setEmuCountHookEnabled(boolean enabled) {
+        unicorn.setEmuCountHookEnabled(enabled);
+    }
+
+    @Override
+    public boolean consumeEmuCountHookTriggered() {
+        return unicorn.consumeEmuCountHookTriggered();
+    }
+
+    @Override
+    public BackendStopReason getLastStopReason() {
+        return BackendStopReason.fromCode(unicorn.getLastStopReason());
+    }
+
+    @Override
+    public long getLastStopPc() {
+        return unicorn.getLastStopPc();
+    }
+
+    @Override
+    public void clearLastStopReason() {
+        unicorn.clearLastStopReason();
+    }
+
+    @Override
+    public boolean supportsNativeTimeslice() {
+        return true;
+    }
+
+    @Override
+    public void configureNativeTimeslice(long instructionBudget) {
+        unicorn.configureNativeTimeslice(instructionBudget);
+    }
+
+    @Override
+    public void setNativeTimesliceEnabled(boolean enabled) {
+        unicorn.setNativeTimesliceEnabled(enabled);
     }
 }

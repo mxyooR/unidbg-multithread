@@ -14,6 +14,9 @@ public interface ThreadDispatcher extends SignalOps {
 
     Number runMainForResult(MainTask main);
 
+    /** Runs a non-main carrier through the dispatcher-owned backend. */
+    Number runThreadForResult(ThreadTask task);
+
     void runThreads(long timeout, TimeUnit unit);
 
     int getTaskCount();

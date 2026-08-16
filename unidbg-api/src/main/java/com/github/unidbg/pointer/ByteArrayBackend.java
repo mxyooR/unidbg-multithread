@@ -186,4 +186,43 @@ class ByteArrayBackend implements Backend {
     public void registerEmuCountHook(long emu_count) {
         throw new UnsupportedOperationException();
     }
+
+    @Override
+    public void setEmuCountHookEnabled(boolean enabled) {
+        throw new UnsupportedOperationException();
+    }
+
+    @Override
+    public boolean consumeEmuCountHookTriggered() {
+        return false;
+    }
+
+    @Override
+    public com.github.unidbg.arm.backend.BackendStopReason getLastStopReason() {
+        return com.github.unidbg.arm.backend.BackendStopReason.NONE;
+    }
+
+    @Override
+    public long getLastStopPc() {
+        return 0;
+    }
+
+    @Override
+    public void clearLastStopReason() {
+    }
+
+    @Override
+    public boolean supportsNativeTimeslice() {
+        return false;
+    }
+
+    @Override
+    public void configureNativeTimeslice(long instructionBudget) {
+        throw new UnsupportedOperationException();
+    }
+
+    @Override
+    public void setNativeTimesliceEnabled(boolean enabled) {
+        throw new UnsupportedOperationException();
+    }
 }

@@ -1140,6 +1140,24 @@ public class ARM {
     private static final Log log = LogFactory.getLog(ARM.class);
 
     public static void initArgs(Emulator<?> emulator, boolean padding, Number... arguments) {
+        initArgsInternal(emulator, padding, arguments, 0, false);
+    }
+
+    /**
+     * Initializes arguments on a task-owned stack without changing the loader's
+     * process stack pointer. This is used by guest worker carriers submitted
+     * from foreign host threads.
+     */
+    public static void initArgs(Emulator<?> emulator, boolean padding, long stackPoint, Number... arguments) {
+        if (stackPoint == 0) {
+            throw new IllegalArgumentException("stackPoint must be non-zero");
+        }
+        initArgsInternal(emulator, padding, arguments, stackPoint, true);
+    }
+
+    private static void initArgsInternal(Emulator<?> emulator, boolean padding,
+                                         Number[] arguments, long taskStackPoint,
+                                         boolean taskOwnedStack) {
         Backend backend = emulator.getBackend();
         Memory memory = emulator.getMemory();
 
@@ -1218,12 +1236,23 @@ public class ARM {
             i++;
         }
         Collections.reverse(list);
+        long stackPoint = taskStackPoint;
         if (list.size() % 2 != 0) { // alignment sp
-            memory.allocateStack(emulator.getPointerSize());
+            if (taskOwnedStack) {
+                stackPoint -= emulator.getPointerSize();
+            } else {
+                memory.allocateStack(emulator.getPointerSize());
+            }
         }
         while (!list.isEmpty()) {
             Number number = list.remove(0);
-            UnidbgPointer pointer = memory.allocateStack(emulator.getPointerSize());
+            UnidbgPointer pointer;
+            if (taskOwnedStack) {
+                stackPoint -= emulator.getPointerSize();
+                pointer = memory.pointer(stackPoint);
+            } else {
+                pointer = memory.allocateStack(emulator.getPointerSize());
+            }
             assert pointer != null;
             if (emulator.is64Bit()) {
                 if ((pointer.peer % 8) != 0) {
@@ -1236,6 +1265,10 @@ public class ARM {
                 }
                 pointer.setInt(0, number.intValue());
             }
+        }
+        if (taskOwnedStack) {
+            backend.reg_write(emulator.is64Bit() ? Arm64Const.UC_ARM64_REG_SP : ArmConst.UC_ARM_REG_SP,
+                    stackPoint);
         }
     }
 

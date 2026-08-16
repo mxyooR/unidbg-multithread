@@ -1,6 +1,5 @@
 package com.github.unidbg.arm.backend.unicorn;
 
-import com.github.unidbg.thread.ThreadContextSwitchException;
 import unicorn.UnicornConst;
 import unicorn.UnicornException;
 
@@ -192,13 +191,54 @@ public class Unicorn {
         NewHook hook = new NewHook(new CodeHook() {
             @Override
             public void hook(Unicorn u, long address, int size, Object user) {
-                throw new ThreadContextSwitchException();
             }
         }, null);
         return new UnHook(register_emu_count_hook(nativeHandle, emu_count, hook));
     }
 
     private static native long register_emu_count_hook(long handle, long emu_count, NewHook hook);
+
+    public void setEmuCountHookEnabled(boolean enabled) {
+        set_emu_count_hook_enabled(nativeHandle, enabled);
+    }
+
+    private static native void set_emu_count_hook_enabled(long handle, boolean enabled);
+
+    public boolean consumeEmuCountHookTriggered() {
+        return consume_emu_count_hook_triggered(nativeHandle);
+    }
+
+    private static native boolean consume_emu_count_hook_triggered(long handle);
+
+    public void configureNativeTimeslice(long budget) {
+        configure_native_timeslice(nativeHandle, budget);
+    }
+
+    private static native void configure_native_timeslice(long handle, long budget);
+
+    public void setNativeTimesliceEnabled(boolean enabled) {
+        set_native_timeslice_enabled(nativeHandle, enabled);
+    }
+
+    private static native void set_native_timeslice_enabled(long handle, boolean enabled);
+
+    public int getLastStopReason() {
+        return get_last_stop_reason(nativeHandle);
+    }
+
+    private static native int get_last_stop_reason(long handle);
+
+    public long getLastStopPc() {
+        return get_last_stop_pc(nativeHandle);
+    }
+
+    private static native long get_last_stop_pc(long handle);
+
+    public void clearLastStopReason() {
+        clear_last_stop_reason(nativeHandle);
+    }
+
+    private static native void clear_last_stop_reason(long handle);
 
     /**
      * Read memory contents.

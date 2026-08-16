@@ -73,6 +73,62 @@ JNIEXPORT jlong JNICALL Java_com_github_unidbg_arm_backend_unicorn_Unicorn_regis
 
 /*
  * Class:     com_github_unidbg_arm_backend_unicorn_Unicorn
+ * Method:    set_emu_count_hook_enabled
+ * Signature: (JZ)V
+ */
+JNIEXPORT void JNICALL Java_com_github_unidbg_arm_backend_unicorn_Unicorn_set_1emu_1count_1hook_1enabled
+  (JNIEnv *, jclass, jlong, jboolean);
+
+/*
+ * Class:     com_github_unidbg_arm_backend_unicorn_Unicorn
+ * Method:    consume_emu_count_hook_triggered
+ * Signature: (J)Z
+ */
+JNIEXPORT jboolean JNICALL Java_com_github_unidbg_arm_backend_unicorn_Unicorn_consume_1emu_1count_1hook_1triggered
+  (JNIEnv *, jclass, jlong);
+
+/*
+ * Class:     com_github_unidbg_arm_backend_unicorn_Unicorn
+ * Method:    configure_native_timeslice
+ * Signature: (JJ)V
+ */
+JNIEXPORT void JNICALL Java_com_github_unidbg_arm_backend_unicorn_Unicorn_configure_1native_1timeslice
+  (JNIEnv *, jclass, jlong, jlong);
+
+/*
+ * Class:     com_github_unidbg_arm_backend_unicorn_Unicorn
+ * Method:    set_native_timeslice_enabled
+ * Signature: (JZ)V
+ */
+JNIEXPORT void JNICALL Java_com_github_unidbg_arm_backend_unicorn_Unicorn_set_1native_1timeslice_1enabled
+  (JNIEnv *, jclass, jlong, jboolean);
+
+/*
+ * Class:     com_github_unidbg_arm_backend_unicorn_Unicorn
+ * Method:    get_last_stop_reason
+ * Signature: (J)I
+ */
+JNIEXPORT jint JNICALL Java_com_github_unidbg_arm_backend_unicorn_Unicorn_get_1last_1stop_1reason
+  (JNIEnv *, jclass, jlong);
+
+/*
+ * Class:     com_github_unidbg_arm_backend_unicorn_Unicorn
+ * Method:    get_last_stop_pc
+ * Signature: (J)J
+ */
+JNIEXPORT jlong JNICALL Java_com_github_unidbg_arm_backend_unicorn_Unicorn_get_1last_1stop_1pc
+  (JNIEnv *, jclass, jlong);
+
+/*
+ * Class:     com_github_unidbg_arm_backend_unicorn_Unicorn
+ * Method:    clear_last_stop_reason
+ * Signature: (J)V
+ */
+JNIEXPORT void JNICALL Java_com_github_unidbg_arm_backend_unicorn_Unicorn_clear_1last_1stop_reason
+  (JNIEnv *, jclass, jlong);
+
+/*
+ * Class:     com_github_unidbg_arm_backend_unicorn_Unicorn
  * Method:    mem_read
  * Signature: (JJJ)[B
  */

@@ -33,6 +33,7 @@ import com.github.unidbg.thread.Task;
 import com.github.unidbg.thread.ThreadContextSwitchException;
 import com.github.unidbg.thread.ThreadDispatcher;
 import com.github.unidbg.thread.ThreadTask;
+import com.github.unidbg.thread.UniThreadDispatcher;
 import com.github.unidbg.thread.Waiter;
 import com.github.unidbg.unix.IO;
 import com.github.unidbg.unix.UnixEmulator;
@@ -343,7 +344,13 @@ public abstract class AndroidSyscallHandler extends UnixSyscallHandler<AndroidFi
                     return 0;
                 }
                 int count = 0;
-                for (Task t : emulator.getThreadDispatcher().getTaskList()) {
+                List<Task> candidates;
+                if (emulator.getThreadDispatcher() instanceof UniThreadDispatcher) {
+                    candidates = ((UniThreadDispatcher) emulator.getThreadDispatcher()).getAllTasksSnapshot();
+                } else {
+                    candidates = emulator.getThreadDispatcher().getTaskList();
+                }
+                for (Task t : candidates) {
                     Waiter waiter = t.getWaiter();
                     if (waiter instanceof FutexWaiter) {
                         if (((FutexWaiter) waiter).wakeUp(uaddr)) {

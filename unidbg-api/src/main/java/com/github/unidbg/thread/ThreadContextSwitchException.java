@@ -8,6 +8,39 @@ import unicorn.ArmConst;
 
 public class ThreadContextSwitchException extends LongJumpException {
 
+    /** Why the current guest carrier yielded the single backend. */
+    public enum Reason {
+        UNKNOWN,
+        TIMESLICE,
+        SAFEPOINT,
+        FUTEX_WAIT,
+        FUTEX_WAKE,
+        SYSCALL,
+        BACKEND_STOP,
+        FAULT,
+        THREAD_EXIT
+    }
+
+    private Reason reason = Reason.UNKNOWN;
+
+    public ThreadContextSwitchException setReason(Reason reason) {
+        this.reason = reason == null ? Reason.UNKNOWN : reason;
+        return this;
+    }
+
+    public Reason getReason() {
+        return reason;
+    }
+
+    /** Compatibility helper for existing futex/scheduler call sites. */
+    public ThreadContextSwitchException setTimeslice() {
+        return setReason(Reason.TIMESLICE);
+    }
+
+    public boolean isTimeslice() {
+        return reason == Reason.TIMESLICE;
+    }
+
     private boolean setReturnValue;
     private long returnValue;
 

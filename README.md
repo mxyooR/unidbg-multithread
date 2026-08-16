@@ -43,6 +43,12 @@ Simple tests under src/test directory
 - Support [dynarmic](https://github.com/MerryMage/dynarmic) fast backend.
 - Support Apple M1 hypervisor, the fastest ARM64 backend.
 - Support Linux KVM backend with Raspberry Pi B4.
+- Optional single-backend multi-thread dispatch for ARM32 and ARM64. Host threads
+  submit guest worker tasks to the dispatcher, which preserves deterministic
+  backend ownership and uses task-local CPU context and stacks.
+
+See [docs/single-backend-multithreading.md](docs/single-backend-multithreading.md)
+for the execution model, configuration, and limitations.
 
 ## Thanks
 - [unicorn](https://github.com/zhkl0228/unicorn)

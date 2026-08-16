@@ -63,4 +63,28 @@ public interface Backend {
 
     void registerEmuCountHook(long emu_count);
 
+    /** Enables or disables the optional instruction-count hook. */
+    void setEmuCountHookEnabled(boolean enabled);
+
+    /** Returns and clears whether the count hook stopped the last run. */
+    boolean consumeEmuCountHookTriggered();
+
+    /** Returns the native reason for the last emulation stop. */
+    BackendStopReason getLastStopReason();
+
+    /** Returns the guest PC observed at the last native stop, when available. */
+    long getLastStopPc();
+
+    /** Clears the native stop metadata before a new scheduler-owned run. */
+    void clearLastStopReason();
+
+    /** Whether this backend can stop at a guest-instruction budget. */
+    boolean supportsNativeTimeslice();
+
+    /** Configures the instruction budget used by native timeslice support. */
+    void configureNativeTimeslice(long instructionBudget);
+
+    /** Enables or disables native timeslice checks for subsequent runs. */
+    void setNativeTimesliceEnabled(boolean enabled);
+
 }

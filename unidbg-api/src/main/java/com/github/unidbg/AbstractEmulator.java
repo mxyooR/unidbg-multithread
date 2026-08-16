@@ -4,6 +4,8 @@ import com.alibaba.fastjson.util.IOUtils;
 import com.github.unidbg.arm.ARMSvcMemory;
 import com.github.unidbg.arm.backend.Backend;
 import com.github.unidbg.arm.backend.BackendFactory;
+import com.github.unidbg.arm.backend.BackendException;
+import com.github.unidbg.arm.backend.BackendStopReason;
 import com.github.unidbg.arm.backend.ReadHook;
 import com.github.unidbg.arm.backend.WriteHook;
 import com.github.unidbg.arm.context.RegisterContext;
@@ -24,6 +26,7 @@ import com.github.unidbg.pointer.MemoryWriteListener;
 import com.github.unidbg.pointer.UnidbgPointer;
 import com.github.unidbg.spi.Dlfcn;
 import com.github.unidbg.thread.MainTask;
+import com.github.unidbg.thread.ThreadTask;
 import com.github.unidbg.thread.PopContextException;
 import com.github.unidbg.thread.RunnableTask;
 import com.github.unidbg.thread.ThreadContextSwitchException;
@@ -59,6 +62,12 @@ import java.util.Stack;
 public abstract class AbstractEmulator<T extends NewFileIO> implements Emulator<T>, MemoryWriteListener {
 
     private static final Logger log = LoggerFactory.getLogger(AbstractEmulator.class);
+
+    /** Scheduler-visible context keys; values are scoped to one backend run. */
+    public static final String EMU_TIMESLICE_KEY = "unidbg.emu.timeslice";
+    public static final String EMU_REASON_KEY = "unidbg.emu.stopReason";
+    private static final String NATIVE_TIMESLICE_BUDGET_KEY = "unidbg.nativeTimesliceBudget";
+    private static final long DEFAULT_NATIVE_TIMESLICE_BUDGET = 100_000L;
 
     public static final long DEFAULT_TIMEOUT = 0;
 
@@ -303,7 +312,7 @@ public abstract class AbstractEmulator<T extends NewFileIO> implements Emulator<
         this.timeout = timeout;
     }
 
-    private boolean running;
+    private volatile boolean running;
 
     @Override
     public boolean isRunning() {
@@ -359,6 +368,7 @@ public abstract class AbstractEmulator<T extends NewFileIO> implements Emulator<
         final Pointer pointer = UnidbgPointer.pointer(this, begin);
         long start = 0;
         Thread exitHook = null;
+        boolean nativeTimesliceEnabled = false;
         try {
             if (log.isDebugEnabled()) {
                 log.debug("emulate " + pointer + " started sp=" + getStackPointer());
@@ -375,7 +385,20 @@ public abstract class AbstractEmulator<T extends NewFileIO> implements Emulator<
                 });
                 Runtime.getRuntime().addShutdownHook(exitHook);
             }
+            nativeTimesliceEnabled = enableNativeTimesliceIfNeeded();
             backend.emu_start(begin, until, 0, 0);
+            BackendStopReason stopReason = nativeTimesliceEnabled
+                    ? backend.getLastStopReason() : BackendStopReason.NORMAL;
+            set(EMU_REASON_KEY, stopReason);
+            if (stopReason == BackendStopReason.TIMESLICE) {
+                set(EMU_TIMESLICE_KEY, Boolean.TRUE);
+                throw new ThreadContextSwitchException().setReason(
+                        ThreadContextSwitchException.Reason.TIMESLICE);
+            }
+            if (stopReason == BackendStopReason.EMU_STOP) {
+                throw new ThreadContextSwitchException().setReason(
+                        ThreadContextSwitchException.Reason.BACKEND_STOP);
+            }
             if (is64Bit()) {
                 return backend.reg_read(Arm64Const.UC_ARM64_REG_X0);
             } else {
@@ -385,6 +408,10 @@ public abstract class AbstractEmulator<T extends NewFileIO> implements Emulator<
             }
         } catch (ThreadContextSwitchException e) {
             e.syncReturnValue(this);
+            set(EMU_REASON_KEY, e.getReason());
+            if (e.getReason() == ThreadContextSwitchException.Reason.TIMESLICE) {
+                set(EMU_TIMESLICE_KEY, Boolean.TRUE);
+            }
             if (log.isTraceEnabled()) {
                 e.printStackTrace(System.out);
             }
@@ -394,6 +421,13 @@ public abstract class AbstractEmulator<T extends NewFileIO> implements Emulator<
         } catch (RuntimeException e) {
             return handleEmuException(e, pointer, start);
         } finally {
+            if (nativeTimesliceEnabled) {
+                try {
+                    backend.setNativeTimesliceEnabled(false);
+                } catch (UnsupportedOperationException ignored) {
+                    // Backend capability is probed before enabling; keep cleanup defensive.
+                }
+            }
             if (exitHook != null) {
                 Runtime.getRuntime().removeShutdownHook(exitHook);
             }
@@ -403,7 +437,51 @@ public abstract class AbstractEmulator<T extends NewFileIO> implements Emulator<
         }
     }
 
+    /** Runs a foreign-host-thread carrier through the dispatcher-owned backend. */
+    protected final Number runThreadForResult(ThreadTask task) {
+        return getThreadDispatcher().runThreadForResult(task);
+    }
+
+    private boolean enableNativeTimesliceIfNeeded() {
+        if (!backend.supportsNativeTimeslice()) {
+            return false;
+        }
+        if (!(threadDispatcher instanceof UniThreadDispatcher)) {
+            return false;
+        }
+        UniThreadDispatcher dispatcher = (UniThreadDispatcher) threadDispatcher;
+        if (!dispatcher.hasMultipleRunnableSources()) {
+            return false;
+        }
+        long budget = nativeTimesliceBudget();
+        if (budget <= 0) {
+            return false;
+        }
+        backend.configureNativeTimeslice(budget);
+        backend.clearLastStopReason();
+        backend.setNativeTimesliceEnabled(true);
+        return true;
+    }
+
+    private static long nativeTimesliceBudget() {
+        String value = System.getProperty(NATIVE_TIMESLICE_BUDGET_KEY);
+        if (value == null || value.trim().isEmpty()) {
+            value = System.getenv(NATIVE_TIMESLICE_BUDGET_KEY);
+        }
+        if (value == null || value.trim().isEmpty()) {
+            return DEFAULT_NATIVE_TIMESLICE_BUDGET;
+        }
+        try {
+            return Long.decode(value.trim());
+        } catch (NumberFormatException e) {
+            return DEFAULT_NATIVE_TIMESLICE_BUDGET;
+        }
+    }
+
     private int handleEmuException(RuntimeException e, Pointer pointer, long start) {
+        if (e instanceof BackendException) {
+            set(EMU_REASON_KEY, BackendStopReason.FAULT);
+        }
         boolean enterDebug = log.isDebugEnabled();
         if (enterDebug || !log.isWarnEnabled()) {
             e.printStackTrace(System.out);

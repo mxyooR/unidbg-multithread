@@ -33,9 +33,17 @@ public abstract class ThreadTask extends AbstractTask implements Task {
     @Override
     public final Number dispatch(AbstractEmulator<?> emulator) throws PopContextException {
         if (isContextSaved()) {
-            return continueRun(emulator, until);
+            Number ret = continueRun(emulator, until);
+            if (ret != null) {
+                setExitStatus(0);
+            }
+            return ret;
         }
-        return runThread(emulator);
+        Number ret = runThread(emulator);
+        if (ret != null) {
+            setExitStatus(0);
+        }
+        return ret;
     }
 
     protected abstract Number runThread(AbstractEmulator<?> emulator);

@@ -70,10 +70,44 @@ JNIEXPORT jlong JNICALL Java_com_github_unidbg_arm_backend_unicorn_Unicorn_nativ
     memset(unicorn, 0, sizeof(struct unicorn));
     unicorn->bps_map = kh_init(64);
     unicorn->uc = eng;
+    unicorn->is64Bit = arch == UC_ARCH_ARM64 ? JNI_TRUE : JNI_FALSE;
     unicorn->singleStep = 0;
     unicorn->fastDebug = JNI_TRUE;
+    atomic_init(&unicorn->last_stop_reason, STOP_NONE);
+    atomic_init(&unicorn->cross_thread_stop_request, 0);
     return (jlong) unicorn;
   }
+}
+
+static jint load_stop_reason(t_unicorn unicorn) {
+  return atomic_load_explicit(&unicorn->last_stop_reason, memory_order_acquire);
+}
+
+static void store_stop_reason(t_unicorn unicorn, jint reason) {
+  atomic_store_explicit(&unicorn->last_stop_reason, reason, memory_order_release);
+}
+
+static void store_stop_reason_unless_timeslice(t_unicorn unicorn, jint reason) {
+  jint current = load_stop_reason(unicorn);
+  while (current != STOP_TIMESLICE) {
+    if (atomic_compare_exchange_weak_explicit(&unicorn->last_stop_reason,
+        &current, reason, memory_order_release, memory_order_acquire)) {
+      return;
+    }
+  }
+}
+
+static uint64_t read_pc(t_unicorn unicorn) {
+  uint64_t pc64 = 0;
+  uint32_t pc32 = 0;
+  if (unicorn->is64Bit) {
+    if (uc_reg_read(unicorn->uc, UC_ARM64_REG_PC, &pc64) == UC_ERR_OK) {
+      return pc64;
+    }
+  } else if (uc_reg_read(unicorn->uc, UC_ARM_REG_PC, &pc32) == UC_ERR_OK) {
+    return (uint64_t) pc32;
+  }
+  return 0;
 }
 
 /*
@@ -242,11 +276,16 @@ JNIEXPORT jlong JNICALL Java_com_github_unidbg_arm_backend_unicorn_Unicorn_regis
 
 static void hook_count_cb(struct uc_struct *uc, uint64_t address, uint32_t size, void *user_data) {
     struct new_hook *nh = (struct new_hook *) user_data;
+    if (!nh->unicorn->count_hook_enabled) {
+        return;
+    }
 
     // count this instruction. ah ah ah.
     nh->unicorn->emu_counter++;
 
     if (nh->unicorn->emu_counter > nh->unicorn->emu_count) {
+        nh->unicorn->emu_counter = 0;
+        nh->unicorn->count_hook_triggered = JNI_TRUE;
         uc_emu_stop(uc);
 
         JNIEnv *env;
@@ -265,6 +304,8 @@ JNIEXPORT jlong JNICALL Java_com_github_unidbg_arm_backend_unicorn_Unicorn_regis
   (JNIEnv *env, jclass cls, jlong handle, jlong emu_count, jobject hook) {
   t_unicorn unicorn = (t_unicorn) handle;
   unicorn->emu_count = emu_count;
+  unicorn->count_hook_enabled = JNI_TRUE;
+  unicorn->count_hook_triggered = JNI_FALSE;
 
   if (emu_count > 0 && unicorn->count_hook == 0) {
     struct new_hook *nh = malloc(sizeof(struct new_hook));
@@ -284,6 +325,83 @@ JNIEXPORT jlong JNICALL Java_com_github_unidbg_arm_backend_unicorn_Unicorn_regis
   } else {
     return 0;
   }
+}
+
+JNIEXPORT void JNICALL Java_com_github_unidbg_arm_backend_unicorn_Unicorn_set_1emu_1count_1hook_1enabled
+  (JNIEnv *env, jclass cls, jlong handle, jboolean enabled) {
+  t_unicorn unicorn = (t_unicorn) handle;
+  unicorn->count_hook_enabled = enabled;
+  unicorn->count_hook_triggered = JNI_FALSE;
+  unicorn->emu_counter = 0;
+}
+
+JNIEXPORT jboolean JNICALL Java_com_github_unidbg_arm_backend_unicorn_Unicorn_consume_1emu_1count_1hook_triggered
+  (JNIEnv *env, jclass cls, jlong handle) {
+  t_unicorn unicorn = (t_unicorn) handle;
+  jboolean triggered = unicorn->count_hook_triggered;
+  unicorn->count_hook_triggered = JNI_FALSE;
+  return triggered;
+}
+
+static void timeslice_cb(struct uc_struct *uc, uint64_t address, uint32_t size, void *user_data) {
+  t_unicorn unicorn = (t_unicorn) user_data;
+  if (unicorn->timeslice_enabled
+      && unicorn->timeslice_budget > 0
+      && ++unicorn->timeslice_counter >= unicorn->timeslice_budget) {
+    unicorn->timeslice_counter = 0;
+    unicorn->last_stop_pc = address;
+    store_stop_reason(unicorn, STOP_TIMESLICE);
+    uc_emu_stop(uc);
+    return;
+  }
+
+  if (atomic_exchange_explicit(&unicorn->cross_thread_stop_request, 0,
+      memory_order_acq_rel) != 0) {
+    unicorn->last_stop_pc = address;
+    store_stop_reason_unless_timeslice(unicorn, STOP_EMU_STOP);
+    uc_emu_stop(uc);
+  }
+}
+
+JNIEXPORT void JNICALL Java_com_github_unidbg_arm_backend_unicorn_Unicorn_configure_1native_1timeslice
+  (JNIEnv *env, jclass cls, jlong handle, jlong budget) {
+  t_unicorn unicorn = (t_unicorn) handle;
+  if (budget < 0) {
+    budget = 0;
+  }
+  unicorn->timeslice_budget = (uint64_t) budget;
+  unicorn->timeslice_counter = 0;
+  if (budget > 0 && unicorn->timeslice_hook == 0) {
+    uc_err err = uc_hook_add(unicorn->uc, &unicorn->timeslice_hook,
+        UC_HOOK_CODE, timeslice_cb, unicorn, 1, 0);
+    if (err != UC_ERR_OK) {
+      throwException(env, err);
+    }
+  }
+}
+
+JNIEXPORT void JNICALL Java_com_github_unidbg_arm_backend_unicorn_Unicorn_set_1native_1timeslice_1enabled
+  (JNIEnv *env, jclass cls, jlong handle, jboolean enabled) {
+  t_unicorn unicorn = (t_unicorn) handle;
+  unicorn->timeslice_enabled = enabled;
+  unicorn->timeslice_counter = 0;
+}
+
+JNIEXPORT jint JNICALL Java_com_github_unidbg_arm_backend_unicorn_Unicorn_get_1last_1stop_1reason
+  (JNIEnv *env, jclass cls, jlong handle) {
+  return load_stop_reason((t_unicorn) handle);
+}
+
+JNIEXPORT jlong JNICALL Java_com_github_unidbg_arm_backend_unicorn_Unicorn_get_1last_1stop_1pc
+  (JNIEnv *env, jclass cls, jlong handle) {
+  return (jlong) ((t_unicorn) handle)->last_stop_pc;
+}
+
+JNIEXPORT void JNICALL Java_com_github_unidbg_arm_backend_unicorn_Unicorn_clear_1last_1stop_reason
+  (JNIEnv *env, jclass cls, jlong handle) {
+  t_unicorn unicorn = (t_unicorn) handle;
+  unicorn->last_stop_pc = 0;
+  store_stop_reason(unicorn, STOP_NONE);
 }
 
 /*
@@ -379,10 +497,34 @@ JNIEXPORT void JNICALL Java_com_github_unidbg_arm_backend_unicorn_Unicorn_emu_1s
   t_unicorn unicorn = (t_unicorn) handle;
   uc_engine *eng = unicorn->uc;
   unicorn->emu_counter = 0;
+  unicorn->timeslice_counter = 0;
+  unicorn->last_stop_pc = 0;
+  atomic_store_explicit(&unicorn->cross_thread_stop_request, 0, memory_order_release);
+  store_stop_reason(unicorn, STOP_NONE);
 
    uc_err err = uc_emu_start(eng, (uint64_t)begin, (uint64_t)until, (uint64_t)timeout, (size_t)count);
    if (err != UC_ERR_OK) {
+      store_stop_reason(unicorn, STOP_FAULT);
       throwException(env, err);
+   }
+
+   jint stop_reason = load_stop_reason(unicorn);
+   uint64_t stop_pc = read_pc(unicorn);
+   size_t core_timed_out = 0;
+   if (timeout > 0) {
+      uc_query(eng, UC_QUERY_TIMEOUT, &core_timed_out);
+   }
+   if (stop_reason == STOP_TIMESLICE || stop_reason == STOP_EMU_STOP) {
+      return;
+   } else if (core_timed_out && until != 0 && stop_pc != (uint64_t) until) {
+      store_stop_reason(unicorn, STOP_TIMEOUT);
+   } else if (count > 0 && until != 0 && stop_pc != (uint64_t) until) {
+      unicorn->last_stop_pc = stop_pc;
+      store_stop_reason(unicorn, STOP_TIMESLICE);
+   } else if (timeout > 0 && until != 0 && stop_pc != (uint64_t) until) {
+      store_stop_reason(unicorn, STOP_TIMEOUT);
+   } else {
+      store_stop_reason(unicorn, STOP_NORMAL);
    }
 }
 
@@ -396,8 +538,11 @@ JNIEXPORT void JNICALL Java_com_github_unidbg_arm_backend_unicorn_Unicorn_emu_1s
   t_unicorn unicorn = (t_unicorn) handle;
   uc_engine *eng = unicorn->uc;
 
+   atomic_store_explicit(&unicorn->cross_thread_stop_request, 1, memory_order_release);
+   store_stop_reason_unless_timeslice(unicorn, STOP_EMU_STOP);
    uc_err err = uc_emu_stop(eng);
    if (err != UC_ERR_OK) {
+      store_stop_reason(unicorn, STOP_FAULT);
       throwException(env, err);
    }
 }

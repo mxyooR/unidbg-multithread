@@ -21,6 +21,8 @@ import com.github.unidbg.spi.Dlfcn;
 import com.github.unidbg.spi.SyscallHandler;
 import com.github.unidbg.thread.Entry;
 import com.github.unidbg.thread.Function64;
+import com.github.unidbg.thread.NativeWorkerTask64;
+import com.github.unidbg.thread.UniThreadDispatcher;
 import com.github.unidbg.unix.UnixSyscallHandler;
 import com.github.unidbg.unwind.SimpleARM64Unwinder;
 import com.github.unidbg.unwind.Unwinder;
@@ -259,6 +261,11 @@ public abstract class AbstractARM64Emulator<T extends NewFileIO> extends Abstrac
 
     @Override
     public Number eFunc(long begin, Number... arguments) {
+        if (getThreadDispatcher() instanceof UniThreadDispatcher
+                && ((UniThreadDispatcher) getThreadDispatcher()).isDispatchingOnOtherThread()) {
+            return runThreadForResult(new NativeWorkerTask64(getPid(), begin, LR,
+                    isPaddingArgument(), arguments));
+        }
         return runMainForResult(new Function64(getPid(), begin, LR, isPaddingArgument(), arguments));
     }
 
