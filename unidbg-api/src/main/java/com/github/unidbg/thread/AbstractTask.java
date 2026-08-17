@@ -90,6 +90,10 @@ abstract class AbstractTask extends BaseTask implements Task {
 
     @Override
     public boolean setErrno(Emulator<?> emulator, int errno) {
+        TaskThreadBinding binding = threadBinding;
+        if (binding != null && binding.isActive()) {
+            binding.getGuestThread().getExecutionState().setErrno(errno);
+        }
         return false;
     }
 

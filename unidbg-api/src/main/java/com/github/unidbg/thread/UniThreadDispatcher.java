@@ -101,6 +101,11 @@ public class UniThreadDispatcher implements ThreadDispatcher {
     }
 
     @Override
+    public TaskThreadBinding getRunningThreadBinding() {
+        return dispatchOwner == Thread.currentThread() ? runningThreadBinding : null;
+    }
+
+    @Override
     public RunContext getRunContext() {
         return runContext;
     }
@@ -440,6 +445,7 @@ public class UniThreadDispatcher implements ThreadDispatcher {
                         this.runningThreadBinding = taskBinding;
                         this.runningAdmission = invocation == null
                                 ? null : invocation.getAdmissionReceipt();
+                        task.restoreThreadState(emulator);
 
                         if(task.isContextSaved()) {
                             task.restoreContext(emulator);

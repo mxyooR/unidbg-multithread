@@ -25,6 +25,7 @@ public final class RunContext implements AutoCloseable {
     private final Map<Long, GuestThreadIncarnation> threads = new LinkedHashMap<>();
     private long nextThreadSerial;
     private long nextCarrierLeaseId;
+    private int nextSyntheticTid = 0x10000;
     private CarrierLease activeLease;
     private State state = State.ACTIVE;
     private Throwable quarantineCause;
@@ -63,11 +64,26 @@ public final class RunContext implements AutoCloseable {
     public synchronized GuestThreadIncarnation registerGuestThread(int guestTid,
                                                                       String birthReason) {
         ensureActive();
+        int actualTid = guestTid;
+        if (actualTid <= 0 || isActiveTid(actualTid)) {
+            do {
+                actualTid = nextSyntheticTid++;
+            } while (isActiveTid(actualTid));
+        }
         long incarnationId = ++nextThreadSerial;
         GuestThreadIncarnation thread = new GuestThreadIncarnation(
-                this, incarnationId, guestTid, birthReason);
+                this, incarnationId, actualTid, birthReason);
         threads.put(incarnationId, thread);
         return thread;
+    }
+
+    private boolean isActiveTid(int guestTid) {
+        for (GuestThreadIncarnation thread : threads.values()) {
+            if (!thread.isRetired() && thread.getGuestTid() == guestTid) {
+                return true;
+            }
+        }
+        return false;
     }
 
     synchronized void retireGuestThread(GuestThreadIncarnation thread) {

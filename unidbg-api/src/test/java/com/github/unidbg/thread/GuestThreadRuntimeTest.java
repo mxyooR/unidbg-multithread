@@ -67,6 +67,19 @@ public class GuestThreadRuntimeTest {
         assertEquals(null, thread.getExecutionState().getPendingException());
     }
 
+    @Test
+    public void liveGuestThreadsNeverShareTidAndIncarnationPreventsAba() {
+        RunContext run = new RunContext();
+        GuestThreadIncarnation first = run.registerGuestThread(77, "first");
+        GuestThreadIncarnation concurrent = run.registerGuestThread(77, "concurrent");
+        assertEquals(77, first.getGuestTid());
+        assertTrue(concurrent.getGuestTid() != first.getGuestTid());
+        run.retireGuestThread(first);
+        GuestThreadIncarnation reused = run.registerGuestThread(77, "reused");
+        assertEquals(77, reused.getGuestTid());
+        assertTrue(reused.getIncarnationId() != first.getIncarnationId());
+    }
+
     private static final class NoopTask extends ThreadTask {
         private NoopTask(int tid) {
             super(tid, 0x1000);

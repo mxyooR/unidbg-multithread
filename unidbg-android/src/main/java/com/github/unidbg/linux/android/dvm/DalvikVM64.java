@@ -3888,7 +3888,7 @@ public class DalvikVM64 extends BaseVM implements VM {
                 Pointer env = context.getPointerArg(1);
                 Pointer args = context.getPointerArg(2); // JavaVMAttachArgs*
                 log.debug("AttachCurrentThread vm={}, env={}, args={}", vm, env.getPointer(0), args);
-                env.setPointer(0, _JNIEnv);
+                env.setPointer(0, attachCurrentThreadJni(_JNIEnv));
                 return JNI_OK;
             }
         });
@@ -3898,7 +3898,8 @@ public class DalvikVM64 extends BaseVM implements VM {
                 RegisterContext context = emulator.getContext();
                 Pointer vm = context.getPointerArg(0);
                 log.debug("DetachCurrentThread vm={}", vm);
-                return 0L;
+                detachCurrentThreadJni();
+                return JNI_OK;
             }
         });
 
@@ -3912,14 +3913,17 @@ public class DalvikVM64 extends BaseVM implements VM {
                 if (log.isDebugEnabled()) {
                     log.debug("GetEnv vm=" + vm + ", env=" + env.getPointer(0) + ", version=0x" + Integer.toHexString(version));
                 }
-                env.setPointer(0, _JNIEnv);
-                return JNI_OK;
+                Pointer threadEnv = getCurrentThreadJniEnv(_JNIEnv);
+                env.setPointer(0, threadEnv);
+                return threadEnv == null ? JNI_EDETACHED : JNI_OK;
             }
         });
         UnidbgPointer _AttachCurrentThreadAsDaemon = svcMemory.registerSvc(new Arm64Svc() {
             @Override
             public long handle(Emulator<?> emulator) {
-                throw new UnsupportedOperationException();
+                Pointer env = emulator.getContext().getPointerArg(1);
+                env.setPointer(0, attachCurrentThreadJni(_JNIEnv));
+                return JNI_OK;
             }
         });
 

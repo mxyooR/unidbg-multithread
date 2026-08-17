@@ -11,6 +11,10 @@ import com.github.unidbg.linux.android.dvm.apk.AssetResolver;
 import com.github.unidbg.spi.LibraryFile;
 import com.github.unidbg.thread.InvocationRecord;
 import com.github.unidbg.thread.InvocationReferenceScope;
+import com.github.unidbg.thread.GuestThreadExecutionState;
+import com.github.unidbg.thread.GuestThreadIncarnation;
+import com.github.unidbg.pointer.UnidbgPointer;
+import com.sun.jna.Pointer;
 import net.dongliu.apk.parser.bean.CertificateMeta;
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
@@ -69,26 +73,77 @@ public abstract class BaseVM implements VM, DvmClassFactory {
     }
 
     final void setPendingException(DvmObject<?> exception) {
-        InvocationLocalReferenceScope scope = currentInvocationReferenceScope();
-        if (scope == null) {
+        GuestThreadExecutionState state = currentGuestThreadExecutionState();
+        if (state == null) {
             throwable = exception;
         } else {
-            scope.setPendingException(exception);
+            state.setPendingException(exception);
         }
     }
 
     final DvmObject<?> getPendingException() {
-        InvocationLocalReferenceScope scope = currentInvocationReferenceScope();
-        return scope == null ? throwable : scope.getPendingException();
+        GuestThreadExecutionState state = currentGuestThreadExecutionState();
+        return state == null ? throwable : (DvmObject<?>) state.getPendingException();
     }
 
     final void clearPendingException() {
-        InvocationLocalReferenceScope scope = currentInvocationReferenceScope();
-        if (scope == null) {
+        GuestThreadExecutionState state = currentGuestThreadExecutionState();
+        if (state == null) {
             throwable = null;
         } else {
-            scope.clearPendingException();
+            state.clearPendingException();
         }
+    }
+
+    private GuestThreadExecutionState currentGuestThreadExecutionState() {
+        GuestThreadIncarnation thread = emulator.getThreadDispatcher().getRunningGuestThread();
+        return thread == null ? null : thread.getExecutionState();
+    }
+
+    final Pointer attachCurrentThreadJni(Pointer fallback) {
+        GuestThreadJniState state = currentGuestThreadJniState(fallback, true);
+        return state == null ? fallback : state.attach();
+    }
+
+    final Pointer getCurrentThreadJniEnv(Pointer fallback) {
+        GuestThreadJniState state = currentGuestThreadJniState(fallback, false);
+        if (state == null) {
+            return currentGuestThreadExecutionState() == null ? fallback : null;
+        }
+        return state.isAttached() ? state.getEnvironment() : null;
+    }
+
+    final void detachCurrentThreadJni() {
+        GuestThreadJniState state = currentGuestThreadJniState(null, false);
+        if (state != null) {
+            state.detach();
+        }
+    }
+
+    private GuestThreadJniState currentGuestThreadJniState(Pointer fallback,
+                                                           boolean create) {
+        GuestThreadExecutionState executionState = currentGuestThreadExecutionState();
+        if (executionState == null) {
+            return null;
+        }
+        Object existing = executionState.getAttachment(this);
+        if (existing != null) {
+            return (GuestThreadJniState) existing;
+        }
+        if (!create) {
+            return null;
+        }
+        if (fallback == null) {
+            throw new IllegalArgumentException("fallback JNIEnv is required");
+        }
+        GuestThreadIncarnation thread = emulator.getThreadDispatcher().getRunningGuestThread();
+        UnidbgPointer environment = emulator.getSvcMemory().allocate(
+                emulator.getPointerSize(), "JNIEnv run="
+                        + thread.getRunContext().getRunId() + ", thread="
+                        + thread.getIncarnationId());
+        environment.setPointer(0, fallback.getPointer(0));
+        GuestThreadJniState created = new GuestThreadJniState(environment);
+        return (GuestThreadJniState) executionState.putAttachmentIfAbsent(this, created);
     }
 
     @Override

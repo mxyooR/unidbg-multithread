@@ -32,4 +32,13 @@ public interface Task extends SignalOps, RunnableTask {
 
     boolean setErrno(Emulator<?> emulator, int errno);
 
+    /** Restores guest-thread state before this task resumes on the backend. */
+    default void restoreThreadState(Emulator<?> emulator) {
+        TaskThreadBinding binding = getThreadBinding();
+        if (binding != null && binding.isActive()) {
+            emulator.getMemory().setErrno(
+                    binding.getGuestThread().getExecutionState().getErrno());
+        }
+    }
+
 }

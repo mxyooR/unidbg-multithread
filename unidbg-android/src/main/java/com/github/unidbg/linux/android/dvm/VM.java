@@ -16,6 +16,7 @@ public interface VM {
     int JNI_TRUE = 1;
     int JNI_OK = 0;
     int JNI_ERR = -1; /* unknown error */
+    int JNI_EDETACHED = -2; /* thread detached from the VM */
     int JNI_NULL = 0;
     int JNI_COMMIT = 1;
     int JNI_ABORT = 2;

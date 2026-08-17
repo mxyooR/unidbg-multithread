@@ -169,7 +169,8 @@ public class DvmObject<T> extends Hashable {
         UnidbgPointer fnPtr = objectType.findNativeFunction(emulator, method);
         addPreparedLocalObject(vm, referenceScope, thisObj);
         List<Object> list = new ArrayList<>(10);
-        list.add(vm.getJNIEnv());
+        list.add(referenceScope == null ? vm.getJNIEnv()
+                : new GuestThreadJniEnvNumber((BaseVM) vm, vm.getJNIEnv()));
         list.add(thisObj.hashCode());
         if (args != null) {
             for (Object arg : args) {

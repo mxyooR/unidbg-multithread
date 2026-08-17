@@ -3802,7 +3802,15 @@ public class DalvikVM extends BaseVM implements VM {
                 if (log.isDebugEnabled()) {
                     log.debug("AttachCurrentThread vm=" + vm + ", env=" + env.getPointer(0) + ", args=" + args);
                 }
-                env.setPointer(0, _JNIEnv);
+                env.setPointer(0, attachCurrentThreadJni(_JNIEnv));
+                return JNI_OK;
+            }
+        });
+
+        UnidbgPointer _DetachCurrentThread = svcMemory.registerSvc(new ArmSvc() {
+            @Override
+            public long handle(Emulator<?> emulator) {
+                detachCurrentThreadJni();
                 return JNI_OK;
             }
         });
@@ -3817,7 +3825,17 @@ public class DalvikVM extends BaseVM implements VM {
                 if (log.isDebugEnabled()) {
                     log.debug("GetEnv vm=" + vm + ", env=" + env.getPointer(0) + ", version=0x" + Integer.toHexString(version));
                 }
-                env.setPointer(0, _JNIEnv);
+                Pointer threadEnv = getCurrentThreadJniEnv(_JNIEnv);
+                env.setPointer(0, threadEnv);
+                return threadEnv == null ? JNI_EDETACHED : JNI_OK;
+            }
+        });
+
+        UnidbgPointer _AttachCurrentThreadAsDaemon = svcMemory.registerSvc(new ArmSvc() {
+            @Override
+            public long handle(Emulator<?> emulator) {
+                Pointer env = emulator.getContext().getPointerArg(1);
+                env.setPointer(0, attachCurrentThreadJni(_JNIEnv));
                 return JNI_OK;
             }
         });
@@ -3827,7 +3845,9 @@ public class DalvikVM extends BaseVM implements VM {
             _JNIInvokeInterface.setInt(i, i);
         }
         _JNIInvokeInterface.setPointer(emulator.getPointerSize() * 4L, _AttachCurrentThread);
+        _JNIInvokeInterface.setPointer(emulator.getPointerSize() * 5L, _DetachCurrentThread);
         _JNIInvokeInterface.setPointer(emulator.getPointerSize() * 6L, _GetEnv);
+        _JNIInvokeInterface.setPointer(emulator.getPointerSize() * 7L, _AttachCurrentThreadAsDaemon);
 
         _JavaVM.setPointer(0, _JNIInvokeInterface);
 

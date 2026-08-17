@@ -63,6 +63,11 @@ public interface ThreadDispatcher extends SignalOps {
         return null;
     }
 
+    /** Current non-owning Task-to-GuestThread binding. */
+    default TaskThreadBinding getRunningThreadBinding() {
+        return null;
+    }
+
     /** Current run lifecycle owner. */
     default RunContext getRunContext() {
         return null;

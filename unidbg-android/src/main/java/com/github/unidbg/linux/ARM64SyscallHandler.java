@@ -35,6 +35,7 @@ import com.github.unidbg.memory.SvcMemory;
 import com.github.unidbg.pointer.UnidbgPointer;
 import com.github.unidbg.thread.PopContextException;
 import com.github.unidbg.thread.Task;
+import com.github.unidbg.thread.ThreadIdentityProvider;
 import com.github.unidbg.thread.ThreadContextSwitchException;
 import com.github.unidbg.unix.IO;
 import com.github.unidbg.unix.UnixEmulator;
@@ -153,8 +154,9 @@ public class ARM64SyscallHandler extends AndroidSyscallHandler {
                     backend.reg_write(Arm64Const.UC_ARM64_REG_X0, emulator.getPid());
                     return;
                 case 178: // gettid
-                    Task task = emulator.get(Task.TASK_KEY);
-                    backend.reg_write(Arm64Const.UC_ARM64_REG_X0, task == null ? 0 : task.getId());
+                    backend.reg_write(Arm64Const.UC_ARM64_REG_X0,
+                            new ThreadIdentityProvider(emulator.getThreadDispatcher())
+                                    .currentGuestTid(0));
                     return;
                 case 129:
                     backend.reg_write(Arm64Const.UC_ARM64_REG_X0, kill(emulator));

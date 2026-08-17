@@ -14,6 +14,7 @@ public final class GuestThreadExecutionState {
     }
 
     private final Map<String, Object> threadLocal = new LinkedHashMap<>();
+    private final Map<Object, Object> attachments = new LinkedHashMap<>();
     private volatile State state = State.ALIVE;
     private volatile int errno;
     private volatile Object pendingException;
@@ -32,6 +33,7 @@ public final class GuestThreadExecutionState {
         state = State.RETIRED;
         pendingException = null;
         threadLocal.clear();
+        attachments.clear();
     }
 
     public int getErrno() {
@@ -74,6 +76,27 @@ public final class GuestThreadExecutionState {
 
     public synchronized Map<String, Object> getThreadLocalSnapshot() {
         return Collections.unmodifiableMap(new LinkedHashMap<>(threadLocal));
+    }
+
+    public synchronized Object getAttachment(Object key) {
+        return attachments.get(key);
+    }
+
+    public synchronized Object putAttachmentIfAbsent(Object key, Object value) {
+        ensureLive();
+        if (key == null || value == null) {
+            throw new NullPointerException("attachment key and value must not be null");
+        }
+        Object existing = attachments.get(key);
+        if (existing != null) {
+            return existing;
+        }
+        attachments.put(key, value);
+        return value;
+    }
+
+    public synchronized Object removeAttachment(Object key) {
+        return attachments.remove(key);
     }
 
     private void ensureLive() {

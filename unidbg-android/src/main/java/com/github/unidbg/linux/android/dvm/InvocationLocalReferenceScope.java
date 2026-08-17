@@ -12,7 +12,6 @@ final class InvocationLocalReferenceScope implements InvocationReferenceScope {
 
     private final BaseVM vm;
     private final Deque<Map<Integer, BaseVM.ObjRef>> frames = new ArrayDeque<>();
-    private DvmObject<?> pendingException;
     private boolean bound;
     private boolean carrierRetired;
     private boolean outcomeAcknowledged;
@@ -83,20 +82,6 @@ final class InvocationLocalReferenceScope implements InvocationReferenceScope {
         }
     }
 
-    synchronized void setPendingException(DvmObject<?> exception) {
-        ensureOpen();
-        pendingException = exception;
-    }
-
-    synchronized DvmObject<?> getPendingException() {
-        return closed ? null : pendingException;
-    }
-
-    synchronized void clearPendingException() {
-        ensureOpen();
-        pendingException = null;
-    }
-
     boolean belongsTo(BaseVM candidate) {
         return vm == candidate;
     }
@@ -132,7 +117,6 @@ final class InvocationLocalReferenceScope implements InvocationReferenceScope {
 
     private void releaseWhenReady(boolean retired, boolean acknowledged, boolean unbound) {
         Map<Integer, BaseVM.ObjRef> released = null;
-        DvmObject<?> releasedException = null;
         synchronized (this) {
             if (closed) {
                 return;
@@ -152,23 +136,8 @@ final class InvocationLocalReferenceScope implements InvocationReferenceScope {
                 frame.clear();
             }
             frames.clear();
-            releasedException = pendingException;
-            pendingException = null;
         }
         vm.deleteInvocationLocalRefs(released);
-        if (releasedException != null && !containsObject(released, releasedException)) {
-            releasedException.onDeleteRef();
-        }
-    }
-
-    private static boolean containsObject(Map<Integer, BaseVM.ObjRef> references,
-                                          DvmObject<?> object) {
-        for (BaseVM.ObjRef reference : references.values()) {
-            if (reference.obj == object) {
-                return true;
-            }
-        }
-        return false;
     }
 
     private void ensureOpen() {
