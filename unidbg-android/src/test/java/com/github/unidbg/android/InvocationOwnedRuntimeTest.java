@@ -7,6 +7,12 @@ import com.github.unidbg.arm.backend.CodeHook;
 import com.github.unidbg.arm.backend.UnHook;
 import com.github.unidbg.arm.backend.Unicorn2Factory;
 import com.github.unidbg.linux.android.AndroidEmulatorBuilder;
+import com.github.unidbg.thread.GuestThreadIncarnation;
+import com.github.unidbg.thread.InvocationContext;
+import com.github.unidbg.thread.InvocationOutcome;
+import com.github.unidbg.thread.NativeWorkerTask64;
+import com.github.unidbg.thread.TaskThreadBinding;
+import com.github.unidbg.thread.ThreadDispatcher;
 import org.junit.Test;
 
 import java.io.IOException;
@@ -15,7 +21,9 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNull;
+import static org.junit.Assert.assertSame;
 import static org.junit.Assert.assertTrue;
 
 /** Generic single-backend handoff test; it contains no library or application code. */
@@ -145,6 +153,77 @@ public class InvocationOwnedRuntimeTest {
             if (second != null && second.isAlive()) {
                 second.join(2000);
             }
+            emulator.close();
+        }
+    }
+
+    @Test
+    public void explicitGuestThreadKeepsThreadStateAcrossInvocationCarriers() throws Exception {
+        AndroidEmulator emulator = AndroidEmulatorBuilder.for64Bit()
+                .addBackendFactory(new Unicorn2Factory(true))
+                .setProcessName("persistent-guest-thread-contract")
+                .build();
+        try {
+            long function = 0x100000000L;
+            Backend backend = emulator.getBackend();
+            backend.mem_map(function, 0x1000, 7);
+            backend.mem_write(function, new byte[]{
+                    0x00, 0x04, 0x00, (byte) 0x91, // add x0, x0, #1
+                    (byte) 0xc0, 0x03, 0x5f, (byte) 0xd6 // ret
+            });
+
+            ThreadDispatcher dispatcher = emulator.getThreadDispatcher();
+            GuestThreadIncarnation guestThread = dispatcher.registerGuestThread(
+                    0x7100, "explicit-runtime-contract");
+            Object pendingException = new Object();
+            guestThread.getExecutionState().setErrno(91);
+            guestThread.getExecutionState().setPendingException(pendingException);
+
+            NativeWorkerTask64 firstTask = new NativeWorkerTask64(
+                    guestThread.getGuestTid(), function, emulator.getReturnAddress(),
+                    false, 10L);
+            TaskThreadBinding firstBinding = dispatcher.bindGuestThread(
+                    guestThread, firstTask);
+            try (InvocationOutcome first = dispatcher.runThreadForOutcome(firstTask,
+                    InvocationContext.builder()
+                            .operation("persistent-thread-first")
+                            .origin("runtime-contract")
+                            .build())) {
+                assertEquals(Long.valueOf(11L), first.getValue());
+                assertSame(guestThread, first.getInvocation().getGuestThread());
+            }
+
+            assertFalse(guestThread.isRetired());
+            assertNull(guestThread.getActiveBinding());
+            assertEquals(91, guestThread.getExecutionState().getErrno());
+            assertSame(pendingException,
+                    guestThread.getExecutionState().getPendingException());
+            assertEquals(91, emulator.getMemory().getLastErrno());
+
+            NativeWorkerTask64 secondTask = new NativeWorkerTask64(
+                    guestThread.getGuestTid(), function, emulator.getReturnAddress(),
+                    false, 20L);
+            TaskThreadBinding secondBinding = dispatcher.bindGuestThread(
+                    guestThread, secondTask);
+            assertEquals(firstBinding.getEpoch() + 1L, secondBinding.getEpoch());
+            try (InvocationOutcome second = dispatcher.runThreadForOutcome(secondTask,
+                    InvocationContext.builder()
+                            .operation("persistent-thread-second")
+                            .origin("runtime-contract")
+                            .build())) {
+                assertEquals(Long.valueOf(21L), second.getValue());
+                assertSame(guestThread, second.getInvocation().getGuestThread());
+            }
+
+            assertFalse(guestThread.isRetired());
+            assertNull(guestThread.getActiveBinding());
+            assertEquals(91, guestThread.getExecutionState().getErrno());
+            assertSame(pendingException,
+                    guestThread.getExecutionState().getPendingException());
+
+            dispatcher.retireGuestThread(guestThread);
+            assertTrue(guestThread.isRetired());
+        } finally {
             emulator.close();
         }
     }

@@ -43,6 +43,14 @@ A guest TID may be reused only after the old thread retires. The monotonically
 increasing incarnation ID keeps the old and new threads distinct and prevents
 TID-based ABA errors.
 
+Ordinary dispatcher-created tasks use `TRANSIENT_CARRIER` bindings and retire
+their synthetic guest-thread identity with the task. A caller that needs
+thread-scoped state across several invocation carriers can instead call
+`ThreadDispatcher.registerGuestThread`, bind each carrier with
+`bindGuestThread`, and explicitly call `retireGuestThread` after the final
+binding has ended. Each rebind advances the binding epoch without changing the
+guest-thread incarnation, errno, JNI attachment, or pending-exception owner.
+
 The current physical register context and worker stack remain owned by the
 `Task`. Moving persistent stack ownership into `GuestThreadIncarnation` is a
 remaining part of the migration.
@@ -140,6 +148,8 @@ The public generic entry points are:
 - `Emulator.eFuncForOutcome`
 - `Module.emulateFunctionForOutcome`
 - `ThreadDispatcher.submitInvocation` and `runThreadForOutcome`
+- `ThreadDispatcher.registerGuestThread`, `bindGuestThread`, and
+  `retireGuestThread`
 - `DvmObject.callJniMethodOutcome` and `callJniMethodObjectOutcome`
 - `DvmClass.callStaticJniMethodOutcome` and
   `callStaticJniMethodObjectOutcome`
@@ -204,7 +214,7 @@ the longer-term thread-semantics goals in the architecture notes:
 | Native timeslice stop reason and guest PC | Implemented for Unicorn2 | `BackendStopReason`, bridge stop flag, and focused backend tests |
 | Serialized backend ownership and foreign submission | Implemented | `UniThreadDispatcher` and generic Android handoff tests |
 | Invocation identity, generation, context, and exact terminal | Implemented | `InvocationRecord`, `InvocationOutcome`, and ownership checks |
-| Guest-thread incarnation, binding, errno, `JNIEnv`, and pending exception | Implemented | `GuestThreadIncarnation`, `TaskThreadBinding`, and JNI runtime tests |
+| Guest-thread incarnation, persistent rebinding, errno, `JNIEnv`, and pending exception | Implemented | Explicit bindings survive invocation carriers; transient dispatcher bindings retain legacy lifetime |
 | Invocation local frames and two-condition cleanup | Implemented | `InvocationLocalReferenceScope` and JNI outcome tests |
 | Typed wait graph, cycle rejection, fault quarantine, and terminal ledger | Implemented | `RunWaitGraph`, `RootFaultController`, and evidence tests |
 | Strict LIFO continuation contract | Model implemented | Wrong parent, thread, epoch, depth, and completion order are rejected |
@@ -248,6 +258,8 @@ The current generic contracts include:
 - two simultaneous idle callers acquire exactly one backend owner;
 - a foreign caller receives a turn and register results survive suspend/restore;
 - guest threads have distinct live TIDs, incarnation IDs, and `JNIEnv` pointers;
+- an explicit guest thread preserves thread state across multiple invocation
+  carriers and advances its binding epoch;
 - errno and pending JNI exceptions do not cross guest-thread boundaries;
 - admission and retirement receipts balance in terminal evidence;
 - cancellation, timeout, ownership mismatch, and two-latch reference cleanup;
@@ -286,3 +298,9 @@ registers, use an isolated task stack, and let the dispatcher own backend
 admission. Application routing, command IDs, readiness rules, and SO-specific
 state belong above this runtime and must not be added to dispatcher or guest
 identity code.
+
+When several tasks represent successive calls on one logical guest thread,
+register that guest thread once and bind each task before submission. The
+dispatcher detaches the persistent binding after carrier cleanup but does not
+retire the incarnation. Explicit retirement is rejected while a binding is
+still active and should occur only after the final outcome is consumed.

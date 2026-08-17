@@ -48,6 +48,20 @@ public final class GuestThreadIncarnation {
     }
 
     public synchronized TaskThreadBinding bind(Task task) {
+        return bind(task, TaskThreadBinding.BindingKind.PERSISTENT_GUEST_THREAD);
+    }
+
+    /**
+     * Binds a short-lived carrier without changing the lifetime of this guest
+     * thread incarnation. The dispatcher uses this for ordinary invocation
+     * tasks.
+     */
+    public synchronized TaskThreadBinding bindCarrier(Task task) {
+        return bind(task, TaskThreadBinding.BindingKind.TRANSIENT_CARRIER);
+    }
+
+    private synchronized TaskThreadBinding bind(Task task,
+                                                TaskThreadBinding.BindingKind kind) {
         if (task == null || retired) {
             throw new IllegalStateException("guest thread is not bindable");
         }
@@ -55,11 +69,23 @@ public final class GuestThreadIncarnation {
             if (activeBinding.getTask() != task) {
                 throw new IllegalStateException("guest thread is already bound to another task");
             }
+            if (activeBinding.getKind() != kind) {
+                throw new IllegalStateException("guest thread binding kind cannot change while active");
+            }
+            attachToTask(task, activeBinding);
             return activeBinding;
         }
         long epoch = activeBinding == null ? 1L : activeBinding.getEpoch() + 1L;
-        activeBinding = new TaskThreadBinding(this, task, epoch);
-        return activeBinding;
+        TaskThreadBinding candidate = new TaskThreadBinding(this, task, epoch, kind);
+        attachToTask(task, candidate);
+        activeBinding = candidate;
+        return candidate;
+    }
+
+    private static void attachToTask(Task task, TaskThreadBinding binding) {
+        if (task instanceof AbstractTask) {
+            ((AbstractTask) task).attachThreadBinding(binding);
+        }
     }
 
     public synchronized TaskThreadBinding getActiveBinding() {

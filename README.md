@@ -19,6 +19,8 @@ or other business workflow.
 - Foreign host-thread submission with an invocation-owned completion result.
 - Guest-thread identity independent of the Java host thread that happens to
   drive the backend.
+- Explicit persistent guest-thread registration and rebinding for calls that
+  must share thread-scoped state across invocation carriers.
 - Per-guest-thread `errno`, `JNIEnv` attachment, pending exception, and
   attachment state.
 - Invocation-scoped JNI local-reference lifetime.
@@ -124,6 +126,8 @@ The public entry points currently include:
 - `Module.emulateFunctionForOutcome`
 - `ThreadDispatcher.submitInvocation`
 - `ThreadDispatcher.runThreadForOutcome`
+- `ThreadDispatcher.registerGuestThread`, `bindGuestThread`, and
+  `retireGuestThread`
 - `DvmObject.callJniMethodOutcome`
 - `DvmClass.callStaticJniMethodOutcome`
 

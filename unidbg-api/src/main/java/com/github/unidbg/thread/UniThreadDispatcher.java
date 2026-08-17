@@ -847,11 +847,8 @@ public class UniThreadDispatcher implements ThreadDispatcher {
         String birthReason = task.isMainThread() ? "process-main" : "dispatcher-task";
         GuestThreadIncarnation thread = runContext.registerGuestThread(
                 task.getId(), birthReason);
-        binding = thread.bind(task);
+        binding = thread.bindCarrier(task);
         threadBindingByTask.put(task, binding);
-        if (task instanceof AbstractTask) {
-            ((AbstractTask) task).attachThreadBinding(binding);
-        }
         return binding;
     }
 
@@ -860,7 +857,12 @@ public class UniThreadDispatcher implements ThreadDispatcher {
         if (binding == null) {
             return;
         }
-        runContext.retireGuestThread(binding.getGuestThread());
+        binding.detach();
+        // Carrier retirement must not end an explicitly owned guest thread.
+        // The caller may bind another task with a new epoch.
+        if (!binding.isPersistentGuestThread()) {
+            runContext.retireGuestThread(binding.getGuestThread());
+        }
         if (task instanceof AbstractTask) {
             ((AbstractTask) task).detachThreadBinding();
         }

@@ -55,6 +55,60 @@ public class GuestThreadRuntimeTest {
     }
 
     @Test
+    public void persistentGuestThreadSurvivesCarrierBindingsUntilExplicitRetirement() {
+        RunContext run = new RunContext();
+        GuestThreadIncarnation thread = run.registerGuestThread(44, "persistent-test");
+        NoopTask firstTask = new NoopTask(44);
+        TaskThreadBinding first = thread.bind(firstTask);
+
+        assertEquals(TaskThreadBinding.BindingKind.PERSISTENT_GUEST_THREAD,
+                first.getKind());
+        assertSame(first, firstTask.getThreadBinding());
+        thread.getExecutionState().setErrno(73);
+        thread.getExecutionState().setPendingException("pending");
+
+        try {
+            run.retireGuestThread(thread);
+            fail("active persistent guest thread was retired");
+        } catch (IllegalStateException expected) {
+            assertFalse(thread.isRetired());
+        }
+
+        first.detach();
+        firstTask.detachThreadBinding();
+        NoopTask secondTask = new NoopTask(44);
+        TaskThreadBinding second = thread.bind(secondTask);
+
+        assertEquals(first.getEpoch() + 1L, second.getEpoch());
+        assertEquals(73, thread.getExecutionState().getErrno());
+        assertEquals("pending", thread.getExecutionState().getPendingException());
+        second.detach();
+        secondTask.detachThreadBinding();
+
+        run.retireGuestThread(thread);
+        assertTrue(thread.isRetired());
+        assertEquals(GuestThreadExecutionState.State.RETIRED,
+                thread.getExecutionState().getState());
+    }
+
+    @Test
+    public void transientCarrierBindingCannotBeUpgradedWhileActive() {
+        RunContext run = new RunContext();
+        NoopTask task = new NoopTask(45);
+        GuestThreadIncarnation thread = run.registerGuestThread(45, "carrier-test");
+        TaskThreadBinding carrier = thread.bindCarrier(task);
+
+        assertEquals(TaskThreadBinding.BindingKind.TRANSIENT_CARRIER,
+                carrier.getKind());
+        try {
+            thread.bind(task);
+            fail("active carrier binding changed lifetime kind");
+        } catch (IllegalStateException expected) {
+            assertSame(carrier, thread.getActiveBinding());
+        }
+    }
+
+    @Test
     public void quarantineRejectsNewAdmissionAndClosesThreadState() {
         RunContext run = new RunContext();
         GuestThreadIncarnation thread = run.registerGuestThread(43, "quarantine-test");

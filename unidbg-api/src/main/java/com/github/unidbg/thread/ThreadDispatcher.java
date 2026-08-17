@@ -73,6 +73,41 @@ public interface ThreadDispatcher extends SignalOps {
         return null;
     }
 
+    /**
+     * Creates a persistent guest-thread identity for callers that need several
+     * invocations to share thread-scoped state.
+     */
+    default GuestThreadIncarnation registerGuestThread(int guestTid,
+                                                       String birthReason) {
+        RunContext run = getRunContext();
+        if (run == null) {
+            throw new UnsupportedOperationException("guest thread runtime is not supported");
+        }
+        return run.registerGuestThread(guestTid, birthReason);
+    }
+
+    /** Binds one invocation carrier to an explicit persistent guest thread. */
+    default TaskThreadBinding bindGuestThread(GuestThreadIncarnation guestThread,
+                                              ThreadTask carrier) {
+        RunContext run = getRunContext();
+        if (run == null || guestThread == null || guestThread.getRunContext() != run) {
+            throw new IllegalArgumentException("guest thread belongs to another run");
+        }
+        if (carrier == null) {
+            throw new NullPointerException("carrier");
+        }
+        return guestThread.bind(carrier);
+    }
+
+    /** Retires an idle persistent guest thread after its last binding ended. */
+    default void retireGuestThread(GuestThreadIncarnation guestThread) {
+        RunContext run = getRunContext();
+        if (run == null) {
+            throw new UnsupportedOperationException("guest thread runtime is not supported");
+        }
+        run.retireGuestThread(guestThread);
+    }
+
     /** Admission proof for the current backend carrier, if any. */
     default AdmissionReceipt getRunningAdmission() {
         return null;

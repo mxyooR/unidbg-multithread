@@ -129,9 +129,13 @@ public final class RunContext implements AutoCloseable {
         return false;
     }
 
-    synchronized void retireGuestThread(GuestThreadIncarnation thread) {
+    public synchronized void retireGuestThread(GuestThreadIncarnation thread) {
         if (thread == null || thread.getRunContext() != this) {
             throw new IllegalArgumentException("guest thread does not belong to this run");
+        }
+        TaskThreadBinding binding = thread.getActiveBinding();
+        if (binding != null && binding.isActive()) {
+            throw new IllegalStateException("guest thread still has an active task binding");
         }
         thread.retire();
     }
