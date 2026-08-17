@@ -58,6 +58,21 @@ public interface ThreadDispatcher extends SignalOps {
         return null;
     }
 
+    /** Runtime identity of the current backend carrier, if any. */
+    default GuestThreadIncarnation getRunningGuestThread() {
+        return null;
+    }
+
+    /** Current run lifecycle owner. */
+    default RunContext getRunContext() {
+        return null;
+    }
+
+    /** Admission proof for the current backend carrier, if any. */
+    default AdmissionReceipt getRunningAdmission() {
+        return null;
+    }
+
     /** True when a different host thread currently owns the backend loop. */
     default boolean isBackendOwnedByAnotherThread() {
         return false;
@@ -70,5 +85,9 @@ public interface ThreadDispatcher extends SignalOps {
     boolean sendSignal(int tid, int sig, SignalTask signalTask);
 
     RunnableTask getRunningTask();
+
+    /** Releases run-owned identity state before the emulator backend is destroyed. */
+    default void dispose() {
+    }
 
 }

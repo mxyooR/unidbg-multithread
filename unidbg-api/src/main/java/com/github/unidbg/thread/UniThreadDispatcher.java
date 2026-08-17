@@ -27,18 +27,23 @@ public class UniThreadDispatcher implements ThreadDispatcher {
 
     private final List<Task> taskList = new ArrayList<>();
     private final AbstractEmulator<?> emulator;
+    private final RunContext runContext;
     private final ConcurrentLinkedDeque<Task> externalTaskQueue = new ConcurrentLinkedDeque<>();
     private final ArrayDeque<InvocationRecord> invocationQueue = new ArrayDeque<>();
     private final Map<Task, InvocationRecord> invocationByTask = new IdentityHashMap<>();
+    private final Map<Task, TaskThreadBinding> threadBindingByTask = new IdentityHashMap<>();
     private long nextInvocationId;
     private long nextGeneration;
     private volatile boolean dispatching;
     private boolean dispatchExiting;
     private volatile Thread dispatchOwner;
     private volatile InvocationRecord runningInvocation;
+    private volatile TaskThreadBinding runningThreadBinding;
+    private volatile AdmissionReceipt runningAdmission;
 
     public UniThreadDispatcher(AbstractEmulator<?> emulator) {
         this.emulator = emulator;
+        this.runContext = new RunContext();
     }
 
     private final List<ThreadTask> threadTaskList = new ArrayList<>();
@@ -46,6 +51,7 @@ public class UniThreadDispatcher implements ThreadDispatcher {
     @Override
     public void addThread(ThreadTask task) {
         synchronized (this) {
+            ensureThreadBinding(task);
             threadTaskList.add(task);
             notifyAll();
         }
@@ -83,6 +89,25 @@ public class UniThreadDispatcher implements ThreadDispatcher {
     @Override
     public InvocationRecord getRunningInvocation() {
         return dispatchOwner == Thread.currentThread() ? runningInvocation : null;
+    }
+
+    @Override
+    public GuestThreadIncarnation getRunningGuestThread() {
+        if (dispatchOwner != Thread.currentThread()) {
+            return null;
+        }
+        TaskThreadBinding binding = runningThreadBinding;
+        return binding == null ? null : binding.getGuestThread();
+    }
+
+    @Override
+    public RunContext getRunContext() {
+        return runContext;
+    }
+
+    @Override
+    public AdmissionReceipt getRunningAdmission() {
+        return dispatchOwner == Thread.currentThread() ? runningAdmission : null;
     }
 
     /** True when the current backend run has a queued handoff or cancellation. */
@@ -336,6 +361,7 @@ public class UniThreadDispatcher implements ThreadDispatcher {
                 dispatching = true;
                 dispatchOwner = Thread.currentThread();
             }
+            ensureThreadBinding(main);
             taskList.add(0, main);
         }
 
@@ -409,7 +435,11 @@ public class UniThreadDispatcher implements ThreadDispatcher {
                         if (log.isDebugEnabled()) {
                             log.debug("Start dispatch task=" + task);
                         }
+                        TaskThreadBinding taskBinding = ensureThreadBinding(task);
                         emulator.set(Task.TASK_KEY, task);
+                        this.runningThreadBinding = taskBinding;
+                        this.runningAdmission = invocation == null
+                                ? null : invocation.getAdmissionReceipt();
 
                         if(task.isContextSaved()) {
                             task.restoreContext(emulator);
@@ -493,6 +523,8 @@ public class UniThreadDispatcher implements ThreadDispatcher {
                             }
                         } finally {
                             this.runningInvocation = null;
+                            this.runningAdmission = null;
+                            this.runningThreadBinding = null;
                         }
                     } else {
                         if (log.isTraceEnabled() && task.isContextSaved()) {
@@ -554,6 +586,8 @@ public class UniThreadDispatcher implements ThreadDispatcher {
             }
             this.runningTask = null;
             this.runningInvocation = null;
+            this.runningAdmission = null;
+            this.runningThreadBinding = null;
             emulator.set(Task.TASK_KEY, null);
             synchronized (this) {
                 dispatching = false;
@@ -586,8 +620,10 @@ public class UniThreadDispatcher implements ThreadDispatcher {
 
     private InvocationRecord createInvocation(ThreadTask task, InvocationContext context,
                                               InvocationReferenceScope referenceScope) {
+        TaskThreadBinding binding = ensureThreadBinding(task);
         InvocationRecord record = new InvocationRecord(++nextInvocationId, ++nextGeneration,
-                Thread.currentThread(), task, context, referenceScope);
+                Thread.currentThread(), task, context, runContext,
+                binding.getGuestThread(), binding, referenceScope);
         invocationByTask.put(task, record);
         record.markQueued();
         invocationQueue.addLast(record);
@@ -615,6 +651,7 @@ public class UniThreadDispatcher implements ThreadDispatcher {
     }
 
     private boolean admitInvocation(InvocationRecord invocation) {
+        AdmissionReceipt admission;
         synchronized (this) {
             if (invocation.getState() == InvocationRecord.State.ADMITTED) {
                 return true;
@@ -623,13 +660,22 @@ public class UniThreadDispatcher implements ThreadDispatcher {
                 return false;
             }
             invocationQueue.removeFirst();
+            admission = runContext.admitCarrier(invocation, invocation.getThreadBinding());
         }
-        return invocation.admit();
+        if (invocation.admit(admission)) {
+            return true;
+        }
+        runContext.retireCarrier(admission);
+        return false;
     }
 
     private void suspendInvocation(InvocationRecord invocation, Task task) {
         if (invocation == null || !invocation.suspend()) {
             return;
+        }
+        CarrierRetirementReceipt receipt = retireActiveCarrierLease(invocation);
+        if (receipt != null) {
+            invocation.recordCarrierRetirement(receipt);
         }
         if (task.canDispatch()) {
             synchronized (this) {
@@ -655,8 +701,13 @@ public class UniThreadDispatcher implements ThreadDispatcher {
         if (invocation == null) {
             return;
         }
+        CarrierRetirementReceipt receipt = retireActiveCarrierLease(invocation);
         invocation.complete(result);
-        invocation.markCarrierRetired();
+        if (receipt == null) {
+            invocation.markCarrierRetired();
+        } else {
+            invocation.markCarrierRetired(receipt);
+        }
         synchronized (this) {
             invocationByTask.remove(invocation.getCarrier());
             invocationQueue.remove(invocation);
@@ -671,9 +722,14 @@ public class UniThreadDispatcher implements ThreadDispatcher {
     }
 
     private void finishRequestedTermination(InvocationRecord invocation) {
+        CarrierRetirementReceipt receipt = retireActiveCarrierLease(invocation);
         invocation.beginQuiescing();
         invocation.finishRequestedTermination();
-        invocation.markCarrierRetired();
+        if (receipt == null) {
+            invocation.markCarrierRetired();
+        } else {
+            invocation.markCarrierRetired(receipt);
+        }
         synchronized (this) {
             invocationByTask.remove(invocation.getCarrier());
             invocationQueue.remove(invocation);
@@ -699,16 +755,71 @@ public class UniThreadDispatcher implements ThreadDispatcher {
             } catch (RuntimeException cleanupFailure) {
                 failure.addSuppressed(cleanupFailure);
             }
+            CarrierRetirementReceipt receipt = retireActiveCarrierLease(record);
             record.complete(InvocationResult.fault("dispatcher stopped", failure));
-            record.markCarrierRetired();
+            if (receipt == null) {
+                record.markCarrierRetired();
+            } else {
+                record.markCarrierRetired(receipt);
+            }
+        }
+    }
+
+    private CarrierRetirementReceipt retireActiveCarrierLease(InvocationRecord invocation) {
+        AdmissionReceipt admission = invocation == null ? null : invocation.getAdmissionReceipt();
+        if (admission == null || admission.getLease().isRetired()) {
+            return null;
+        }
+        try {
+            return runContext.retireCarrier(admission);
+        } catch (RuntimeException e) {
+            runContext.quarantine(e);
+            throw e;
+        }
+    }
+
+    private synchronized TaskThreadBinding ensureThreadBinding(Task task) {
+        TaskThreadBinding binding = threadBindingByTask.get(task);
+        if (binding != null && binding.isActive()) {
+            return binding;
+        }
+        TaskThreadBinding taskBinding = task.getThreadBinding();
+        if (taskBinding != null && taskBinding.isActive()
+                && taskBinding.getRunContext() == runContext) {
+            threadBindingByTask.put(task, taskBinding);
+            return taskBinding;
+        }
+        String birthReason = task.isMainThread() ? "process-main" : "dispatcher-task";
+        GuestThreadIncarnation thread = runContext.registerGuestThread(
+                task.getId(), birthReason);
+        binding = thread.bind(task);
+        threadBindingByTask.put(task, binding);
+        if (task instanceof AbstractTask) {
+            ((AbstractTask) task).attachThreadBinding(binding);
+        }
+        return binding;
+    }
+
+    private synchronized void retireThreadBinding(Task task) {
+        TaskThreadBinding binding = threadBindingByTask.remove(task);
+        if (binding == null) {
+            return;
+        }
+        runContext.retireGuestThread(binding.getGuestThread());
+        if (task instanceof AbstractTask) {
+            ((AbstractTask) task).detachThreadBinding();
         }
     }
 
     private void destroyTask(Task task) {
-        task.destroy(emulator);
-        for (SignalTask signalTask : task.getSignalTaskList()) {
-            signalTask.destroy(emulator);
-            task.removeSignalTask(signalTask);
+        try {
+            task.destroy(emulator);
+            for (SignalTask signalTask : task.getSignalTaskList()) {
+                signalTask.destroy(emulator);
+                task.removeSignalTask(signalTask);
+            }
+        } finally {
+            retireThreadBinding(task);
         }
     }
 
@@ -721,6 +832,14 @@ public class UniThreadDispatcher implements ThreadDispatcher {
         } catch (RuntimeException e) {
             log.warn("unable to request backend handoff", e);
         }
+    }
+
+    @Override
+    public synchronized void dispose() {
+        runContext.close();
+        threadBindingByTask.clear();
+        runningThreadBinding = null;
+        runningAdmission = null;
     }
 
     @Override

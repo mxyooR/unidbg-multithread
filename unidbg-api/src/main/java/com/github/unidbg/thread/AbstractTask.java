@@ -12,6 +12,8 @@ abstract class AbstractTask extends BaseTask implements Task {
 
     protected final int id;
 
+    private volatile TaskThreadBinding threadBinding;
+
     public AbstractTask(int id) {
         this.id = id;
     }
@@ -42,6 +44,26 @@ abstract class AbstractTask extends BaseTask implements Task {
     @Override
     public int getId() {
         return id;
+    }
+
+    @Override
+    public final TaskThreadBinding getThreadBinding() {
+        return threadBinding;
+    }
+
+    final void attachThreadBinding(TaskThreadBinding binding) {
+        if (binding == null) {
+            throw new NullPointerException("binding");
+        }
+        TaskThreadBinding existing = threadBinding;
+        if (existing != null && existing.isActive() && existing != binding) {
+            throw new IllegalStateException("task already has an active guest-thread binding");
+        }
+        threadBinding = binding;
+    }
+
+    final void detachThreadBinding() {
+        threadBinding = null;
     }
 
     private final List<SignalTask> signalTaskList = new ArrayList<>();

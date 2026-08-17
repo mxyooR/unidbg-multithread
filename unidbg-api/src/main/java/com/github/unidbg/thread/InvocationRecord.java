@@ -4,6 +4,9 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
 
 /**
  * Ownership record for one native invocation. The record, rather than a task
@@ -27,9 +30,17 @@ public final class InvocationRecord {
     private final Thread submitterThread;
     private final InvocationContext context;
     private final ThreadTask carrier;
+    private final RunContext runContext;
+    private final GuestThreadIncarnation guestThread;
+    private final TaskThreadBinding threadBinding;
     private final CompletableFuture<InvocationOutcome> completion = new CompletableFuture<>();
     private final InvocationResult.Ownership ownership;
+    private final List<AdmissionReceipt> admissionReceipts = new ArrayList<>();
+    private final List<CarrierRetirementReceipt> retirementReceipts = new ArrayList<>();
     private volatile InvocationReferenceScope referenceScope;
+    private volatile InvocationContinuation continuation;
+    private volatile AdmissionReceipt admissionReceipt;
+    private volatile CarrierRetirementReceipt retirementReceipt;
     private volatile State state = State.RESERVED;
     private volatile InvocationResult terminal;
     private volatile InvocationResult requestedTerminal;
@@ -39,8 +50,17 @@ public final class InvocationRecord {
     InvocationRecord(long invocationId, long generation, Thread submitterThread,
                      ThreadTask carrier, InvocationContext context,
                      InvocationReferenceScope referenceScope) {
+        this(invocationId, generation, submitterThread, carrier, context,
+                RunContext.detached(), null, null, referenceScope);
+    }
+
+    InvocationRecord(long invocationId, long generation, Thread submitterThread,
+                     ThreadTask carrier, InvocationContext context,
+                     RunContext runContext, GuestThreadIncarnation guestThread,
+                     TaskThreadBinding threadBinding,
+                     InvocationReferenceScope referenceScope) {
         if (invocationId <= 0L || generation <= 0L || submitterThread == null
-                || carrier == null || context == null) {
+                || carrier == null || context == null || runContext == null) {
             throw new IllegalArgumentException("invalid invocation identity");
         }
         this.invocationId = invocationId;
@@ -48,6 +68,9 @@ public final class InvocationRecord {
         this.submitterThread = submitterThread;
         this.carrier = carrier;
         this.context = context;
+        this.runContext = runContext;
+        this.guestThread = guestThread;
+        this.threadBinding = threadBinding;
         this.ownership = new InvocationResult.Ownership(
                 invocationId, generation, submitterThread.getId(),
                 submitterThread.getName(), context.getOperation());
@@ -74,6 +97,38 @@ public final class InvocationRecord {
 
     public InvocationContext getContext() {
         return context;
+    }
+
+    public RunContext getRunContext() {
+        return runContext;
+    }
+
+    public GuestThreadIncarnation getGuestThread() {
+        return guestThread;
+    }
+
+    public TaskThreadBinding getThreadBinding() {
+        return threadBinding;
+    }
+
+    public InvocationContinuation getContinuation() {
+        return continuation;
+    }
+
+    public AdmissionReceipt getAdmissionReceipt() {
+        return admissionReceipt;
+    }
+
+    public CarrierRetirementReceipt getRetirementReceipt() {
+        return retirementReceipt;
+    }
+
+    public synchronized List<AdmissionReceipt> getAdmissionReceipts() {
+        return Collections.unmodifiableList(new ArrayList<>(admissionReceipts));
+    }
+
+    public synchronized List<CarrierRetirementReceipt> getRetirementReceipts() {
+        return Collections.unmodifiableList(new ArrayList<>(retirementReceipts));
     }
 
     public InvocationReferenceScope getReferenceScope() {
@@ -113,6 +168,25 @@ public final class InvocationRecord {
             return false;
         }
         state = State.ADMITTED;
+        return true;
+    }
+
+    synchronized boolean admit(AdmissionReceipt receipt) {
+        if (receipt == null || !receipt.matches(this) || !admit()) {
+            return false;
+        }
+        admissionReceipt = receipt;
+        admissionReceipts.add(receipt);
+        if (continuation == null && guestThread != null && threadBinding != null) {
+            int stackDepth = guestThread.getInvocationStack().depth();
+            continuation = new InvocationContinuation(
+                    invocationId, generation, guestThread, threadBinding.getEpoch(),
+                    stackDepth == Integer.MAX_VALUE ? Integer.MAX_VALUE : stackDepth + 1,
+                    admissionReceipts.size());
+        }
+        if (continuation != null && guestThread != null) {
+            guestThread.getInvocationStack().push(continuation);
+        }
         return true;
     }
 
@@ -189,6 +263,22 @@ public final class InvocationRecord {
         if (referenceScope != null) {
             referenceScope.markCarrierRetired();
         }
+        if (continuation != null && guestThread != null) {
+            guestThread.getInvocationStack().pop(continuation);
+        }
+    }
+
+    synchronized void markCarrierRetired(CarrierRetirementReceipt receipt) {
+        recordCarrierRetirement(receipt);
+        markCarrierRetired();
+    }
+
+    synchronized void recordCarrierRetirement(CarrierRetirementReceipt receipt) {
+        if (receipt == null || admissionReceipt == null || !receipt.matches(admissionReceipt)) {
+            throw new IllegalArgumentException("retirement receipt does not match admission");
+        }
+        retirementReceipt = receipt;
+        retirementReceipts.add(receipt);
     }
 
     synchronized void acknowledgeOutcome() {

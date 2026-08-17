@@ -533,6 +533,7 @@ public abstract class AbstractEmulator<T extends NewFileIO> implements Emulator<
 
             closeInternal();
 
+            threadDispatcher.dispose();
             backend.destroy();
         } finally {
             closed = true;

@@ -13,6 +13,11 @@ public interface Task extends SignalOps, RunnableTask {
 
     int getId();
 
+    /** Stable guest-thread binding for this carrier, when managed by a runtime. */
+    default TaskThreadBinding getThreadBinding() {
+        return null;
+    }
+
     Number dispatch(AbstractEmulator<?> emulator) throws PopContextException;
 
     boolean isMainThread();
