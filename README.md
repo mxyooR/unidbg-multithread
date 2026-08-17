@@ -69,6 +69,44 @@ publishes the invocation terminal. A guest TID can be reused only after the
 previous incarnation retires; incarnation IDs prevent stale-identity (ABA)
 errors.
 
+```mermaid
+flowchart LR
+    H["Multiple Java host threads"] --> Q["Invocation queue"]
+
+    subgraph R["RunContext"]
+        T["GuestThreadIncarnation"]
+        I["InvocationRecord"]
+        B["TaskThreadBinding"]
+        D["UniThreadDispatcher"]
+        A["AdmissionReceipt"]
+        L["CarrierLease"]
+        X["CarrierRetirementReceipt"]
+
+        T --> I
+        T --> B
+        I --> Q
+        B --> D
+        Q --> D
+        D --> A
+        A --> L
+        D --> X
+    end
+
+    L --> U["Single Unicorn2 backend"]
+    U --> S["Stop reason and guest PC"]
+    S --> D
+    X --> O["Exact InvocationOutcome"]
+```
+
+The four identities are intentionally different:
+
+```text
+Host Java Thread != Guest Thread
+Task / Carrier     != Guest Thread
+Invocation         != Guest Thread
+Observed Role      != Guest Thread Identity
+```
+
 See the detailed design and API notes in
 [`docs/single-backend-multithreading.md`](docs/single-backend-multithreading.md).
 

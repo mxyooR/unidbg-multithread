@@ -9,6 +9,25 @@ The Guest Thread Runtime migration is under development. One backend still
 executes one carrier at a time; this is deterministic interleaving at explicit
 stop and yield points, not simultaneous multi-core guest execution.
 
+## Evolution in one view
+
+The migration follows the three stages described in the architecture notes:
+
+```mermaid
+flowchart LR
+    G1["Native timeslice<br/>Task gets execution time"] --> G2["Invocation-owned runtime<br/>Call gets identity and terminal"]
+    G2 --> G3["Guest Thread Runtime<br/>Thread, invocation, and carrier are separated"]
+
+    G1 -. "stop reason, context save, FIFO" .-> G1N["Scheduling contract"]
+    G2 -. "generation, exact outcome, local scope" .-> G2N["Invocation contract"]
+    G3 -. "binding, lease, receipt, thread state" .-> G3N["Thread contract"]
+```
+
+The later stage does not remove the earlier one. Native stop reasons still
+provide the safe points used by the dispatcher; invocation ownership gives
+each overlapping call an exact lifecycle; the Guest Thread Runtime assigns
+thread-level state that must survive carrier changes.
+
 ## Ownership model
 
 The runtime separates four identities:
@@ -50,6 +69,58 @@ Unicorn2 records a stop reason and guest PC for each run. Its instruction-budget
 hook requests a timeslice stop from the code hook, while cross-thread stop
 requests use the bridge's stop flag. Other backends retain their existing
 behavior through optional backend capability methods.
+
+### Backend boundary
+
+The native bridge reports why execution stopped; it does not decide which
+invocation runs next. That decision remains in the Java dispatcher:
+
+```mermaid
+flowchart TD
+    H["Unicorn instruction hook"] --> R["Record stop reason and guest PC"]
+    R --> N["Native bridge returns to Java"]
+    N --> E["AbstractEmulator translates the stop"]
+    E --> D["UniThreadDispatcher owns admission and handoff"]
+    D --> C["Restore task CPU context"]
+    C --> U["Drive the single backend"]
+    U --> H
+```
+
+`TIMESLICE`, `BACKEND_STOP`, and `FUTEX_WAIT` are transport states in this
+pipeline. None of them is a completed invocation. Only a natural return or an
+exact terminal request can produce an `InvocationOutcome`, and publication is
+still delayed until carrier retirement.
+
+### A/B backend handoff
+
+The normal cross-host-thread handoff is an interleaving sequence, not parallel
+execution:
+
+```mermaid
+sequenceDiagram
+    participant A as Host submitter A
+    participant D as Dispatcher
+    participant U as Single backend
+    participant B as Host submitter B
+
+    A->>D: submit invocation A
+    D->>U: admit A and restore A context
+    B->>D: submit invocation B
+    D->>U: request stop if A is still driving
+    U-->>D: stop reason and guest PC
+    D->>D: suspend A and retire A carrier lease
+    D->>U: admit B and restore B context
+    U-->>D: B returns naturally
+    D->>D: retire B carrier and publish B terminal
+    D-->>B: exact B outcome
+    D->>U: re-admit A from its saved task context
+    U-->>D: A resumes and eventually returns
+    D-->>A: exact A outcome
+```
+
+The sequence makes two ownership rules visible: a foreign submitter never
+drives the backend directly, and a stop used to hand the backend to B cannot
+be reported as A's completion.
 
 ## Invocation outcomes
 
@@ -123,6 +194,29 @@ placing the child in the ordinary FIFO would deadlock behind its parent.
 Same-thread synchronous re-entry, same-thread asynchronous mailbox work, and
 cross-thread synchronous submission must remain distinct modes.
 
+## Implementation status
+
+This matrix separates the generic runtime that is present in this fork from
+the longer-term thread-semantics goals in the architecture notes:
+
+| Capability | Status | Evidence or boundary |
+| --- | --- | --- |
+| Native timeslice stop reason and guest PC | Implemented for Unicorn2 | `BackendStopReason`, bridge stop flag, and focused backend tests |
+| Serialized backend ownership and foreign submission | Implemented | `UniThreadDispatcher` and generic Android handoff tests |
+| Invocation identity, generation, context, and exact terminal | Implemented | `InvocationRecord`, `InvocationOutcome`, and ownership checks |
+| Guest-thread incarnation, binding, errno, `JNIEnv`, and pending exception | Implemented | `GuestThreadIncarnation`, `TaskThreadBinding`, and JNI runtime tests |
+| Invocation local frames and two-condition cleanup | Implemented | `InvocationLocalReferenceScope` and JNI outcome tests |
+| Typed wait graph, cycle rejection, fault quarantine, and terminal ledger | Implemented | `RunWaitGraph`, `RootFaultController`, and evidence tests |
+| Strict LIFO continuation contract | Model implemented | Wrong parent, thread, epoch, depth, and completion order are rejected |
+| Synchronous owner-thread nested backend execution | Not implemented | The public path rejects it to avoid a FIFO deadlock |
+| Persistent guest-thread stack ownership and canary evidence | In progress | Physical CPU context and worker stack remain task-owned |
+| Full pthread/TCB/TLS, signal, futex-owner, and thread-exit semantics | Not implemented | No claim of complete Android kernel or Bionic thread emulation |
+| Uniform behavior across optional native backends | Not claimed | Exact stop evidence is currently verified most directly with Unicorn2 |
+
+"Implemented" here means the generic contract is present and covered by the
+repository's current tests. It does not mean that every Android thread API or
+every backend has production-complete semantics.
+
 ## Configuration
 
 The native instruction budget is enabled only when the dispatcher has more than
@@ -137,7 +231,19 @@ defaults.
 ## Verified contracts
 
 The repository tests use anonymous ARM instructions and generic runtime tasks.
-They verify:
+The evidence is intentionally read in three layers:
+
+| Layer | What it proves | What it does not prove |
+| --- | --- | --- |
+| Model contract | Identity, state transitions, receipt matching, wait cycles, and LIFO rules | That a production caller reaches the authority |
+| Production-connected contract | Dispatcher, emulator, DVM/JNI, and backend entry points use the same runtime ownership | Complete behavior of every optional backend |
+| Runtime scenario | Multiple host threads interleave through a real backend and preserve isolation | True SMP or device-level scheduling equivalence |
+
+The generic tests do not use a target SO, command protocol, readiness graph, or
+application-specific state. A passing model test is therefore evidence for the
+runtime contract it names, not evidence for an unrelated application workflow.
+
+The current generic contracts include:
 
 - two simultaneous idle callers acquire exactly one backend owner;
 - a foreign caller receives a turn and register results survive suspend/restore;
