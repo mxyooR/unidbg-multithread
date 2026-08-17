@@ -183,7 +183,7 @@ public class ARM32SyscallHandler extends AndroidSyscallHandler {
                 case 224: // gettid
                     backend.reg_write(ArmConst.UC_ARM_REG_R0,
                             new ThreadIdentityProvider(emulator.getThreadDispatcher())
-                                    .currentGuestTid(0));
+                                    .requireCurrentGuestTid());
                     return;
                 case 33:
                     backend.reg_write(ArmConst.UC_ARM_REG_R0, access(emulator));

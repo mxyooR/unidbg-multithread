@@ -55,8 +55,28 @@ Managed bindings allocate one real worker stack through the
 `GuestThreadIncarnation`. The logical `StackRegion` and its canary remain live
 after a carrier is retired, and each carrier records its exact entry SP in a
 `TaskStackEvidence` object. Backend register contexts and continuation
-snapshots are still task-owned; tasks without a runtime binding use the legacy
+snapshots are still stored on the task, but managed contexts also carry a
+`SavedContextOwnership` proof. Tasks without a runtime binding use the legacy
 task-owned stack fallback.
+
+### Saved context ownership
+
+The native context handle is only a physical storage slot; it is not an
+identity. On every managed `saveContext`, the runtime records the exact task,
+`TaskThreadBinding` identity and epoch, `GuestThreadIncarnation` identity, and
+the currently admitted invocation ID/generation when the save occurs during an
+invocation. The proof also records the stack allocation/canary evidence. On
+restore, the dispatcher must present the same live binding and, for an
+invocation context, a new live admission for the same invocation generation.
+The real stack allocation and canary must still match. On AArch64, when the
+backend exposes `TPIDR_EL0`, the value captured with the context is checked
+again after the native restore.
+
+Any mismatch raises `SavedContextOwnershipException`, publishes a generic
+runtime-integrity root fault, and prevents the run from accepting new
+admissions. This is a generic stale-context/ABA guard; it does not infer
+identity from a Java host thread, process role, command ID, or application
+workflow. Unbound legacy tasks keep the pre-runtime context path.
 
 ## Dispatch and handoff
 
@@ -218,11 +238,12 @@ the longer-term thread-semantics goals in the architecture notes:
 | Serialized backend ownership and foreign submission | Implemented | `UniThreadDispatcher` and generic Android handoff tests |
 | Invocation identity, generation, context, and exact terminal | Implemented | `InvocationRecord`, `InvocationOutcome`, and ownership checks |
 | Guest-thread incarnation, persistent rebinding, errno, `JNIEnv`, and pending exception | Implemented | Explicit bindings survive invocation carriers; transient dispatcher bindings retain legacy lifetime |
+| Saved backend-context ownership and stale-restore rejection | Implemented for managed bindings | `SavedContextOwnership` checks binding/epoch, GuestThread incarnation, invocation generation, stack evidence, and optional AArch64 `TPIDR_EL0` |
 | Invocation local frames and two-condition cleanup | Implemented | `InvocationLocalReferenceScope` and JNI outcome tests |
 | Typed wait graph, cycle rejection, fault quarantine, and terminal ledger | Implemented | `RunWaitGraph`, `RootFaultController`, and evidence tests |
 | Strict LIFO continuation contract | Model implemented | Wrong parent, thread, epoch, depth, and completion order are rejected |
 | Synchronous owner-thread nested backend execution | Not implemented | The public path rejects it to avoid a FIFO deadlock |
-| Persistent guest-thread stack allocation and canary evidence | Implemented for managed bindings | `StackRegion` owns logical bounds; `TaskStackEvidence` reads the real backend canary and entry SP; CPU context remains task-owned |
+| Persistent guest-thread stack allocation and canary evidence | Implemented for managed bindings | `StackRegion` owns logical bounds; `TaskStackEvidence` reads the real backend canary and entry SP; saved CPU context remains task-stored but ownership-checked |
 | Full pthread/TCB/TLS, signal, futex-owner, and thread-exit semantics | Not implemented | No claim of complete Android kernel or Bionic thread emulation |
 | Uniform behavior across optional native backends | Not claimed | Exact stop evidence is currently verified most directly with Unicorn2 |
 
@@ -265,6 +286,8 @@ The current generic contracts include:
   carriers and advances its binding epoch;
 - managed carriers reuse the same backend stack allocation for one guest thread,
   with a read-back canary and entry-SP evidence;
+- saved backend contexts reject a rebound task binding and a stale invocation
+  generation before native restore;
 - errno and pending JNI exceptions do not cross guest-thread boundaries;
 - admission and retirement receipts balance in terminal evidence;
 - cancellation, timeout, ownership mismatch, and two-latch reference cleanup;
@@ -279,9 +302,11 @@ The current generic contracts include:
   or multi-core memory-consistency model.
 - Synchronous owner-thread guest re-entry has a model contract but no production
   nested-backend path and is rejected.
-- Backend CPU contexts and continuation snapshots remain task-owned. Managed
-  bindings use persistent GuestThread-owned stack regions with canary evidence;
-  unbound legacy tasks still use task-owned fallback stacks.
+- Backend CPU contexts and continuation snapshots remain task-stored. Managed
+  contexts are additionally bound to a live task/binding/invocation proof and
+  are rejected after an epoch or generation change. Managed bindings use
+  persistent GuestThread-owned stack regions with canary evidence; unbound
+  legacy tasks still use task-owned fallback stacks.
 - Full pthread/TCB/TLS, signal, futex-owner, and thread-exit semantics are not
   yet represented by the guest-thread object.
 - Cancellation depends on reaching a supported stop point. The current run

@@ -183,6 +183,60 @@ public class GuestThreadRuntimeTest {
         }
     }
 
+    @Test
+    public void savedContextRejectsAReboundTaskBinding() {
+        RunContext run = new RunContext();
+        NoopTask task = new NoopTask(79);
+        GuestThreadIncarnation thread = run.registerGuestThread(79, "context-owner-test");
+        TaskThreadBinding first = thread.bindCarrier(task);
+        SavedContextOwnership ownership = SavedContextOwnership.capture(
+                task, first, null, null, false, 0L);
+
+        first.detach();
+        TaskThreadBinding replacement = thread.bindCarrier(task);
+        try {
+            ownership.requireCurrent(task, replacement, null, null);
+            fail("stale context survived a binding epoch change");
+        } catch (SavedContextOwnershipException expected) {
+            assertTrue(expected.getMessage().contains("stale")
+                    || expected.getMessage().contains("changed"));
+        }
+    }
+
+    @Test
+    public void savedContextRejectsAStaleInvocationGeneration() {
+        RunContext run = new RunContext();
+        NoopTask task = new NoopTask(80);
+        GuestThreadIncarnation thread = run.registerGuestThread(80, "context-generation-test");
+        TaskThreadBinding binding = thread.bindCarrier(task);
+        InvocationRecord firstRecord = new InvocationRecord(
+                31L, 101L, Thread.currentThread(), task,
+                InvocationContext.builder().operation("first-entry").build(),
+                run, thread, binding, null);
+        firstRecord.markQueued();
+        AdmissionReceipt firstAdmission = run.admitCarrier(firstRecord, binding);
+        assertTrue(firstRecord.admit(firstAdmission));
+        SavedContextOwnership ownership = SavedContextOwnership.capture(
+                task, binding, firstAdmission, null, false, 0L);
+
+        CarrierRetirementReceipt firstRetirement = run.retireCarrier(firstAdmission);
+        firstRecord.markCarrierRetired(firstRetirement);
+
+        InvocationRecord secondRecord = new InvocationRecord(
+                32L, 102L, Thread.currentThread(), task,
+                InvocationContext.builder().operation("second-entry").build(),
+                run, thread, binding, null);
+        secondRecord.markQueued();
+        AdmissionReceipt secondAdmission = run.admitCarrier(secondRecord, binding);
+        assertTrue(secondRecord.admit(secondAdmission));
+        try {
+            ownership.requireCurrent(task, binding, secondAdmission, null);
+            fail("stale invocation generation was accepted");
+        } catch (SavedContextOwnershipException expected) {
+            assertTrue(expected.getMessage().contains("generation"));
+        }
+    }
+
     private static final class NoopTask extends ThreadTask {
         private NoopTask(int tid) {
             super(tid, 0x1000);

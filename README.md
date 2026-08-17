@@ -25,6 +25,10 @@ or other business workflow.
   attachment state.
 - GuestThread-owned native stack allocation for managed bindings, with real
   backend canary read-back and carrier `TaskStackEvidence`.
+- Saved backend contexts carry a `SavedContextOwnership` proof tied to the
+  exact task binding, binding epoch, GuestThread incarnation, invocation
+  generation, stack allocation, and (when exposed) AArch64 `TPIDR_EL0`; stale
+  restores fail closed and quarantine the run.
 - Invocation-scoped JNI local-reference lifetime.
 - Typed wait dependencies with atomic batch publication and cycle detection.
 - Root-fault quarantine, transitive dependent snapshots, and terminal evidence
@@ -45,8 +49,10 @@ This project does not yet claim production-complete guest threading:
 - Synchronous guest re-entry from the current dispatcher owner is validated as
   a contract but is currently rejected; nested backend execution is not wired
   through a real callback return boundary yet.
-- CPU register contexts and continuation snapshots remain task-owned. Managed
-  GuestThread bindings now own and reuse one real worker-stack allocation with
+- CPU register contexts and continuation snapshots remain stored on the task,
+  but a managed saved context is not restorable by handle alone: its ownership
+  proof must still match the live binding and invocation admission. Managed
+  GuestThread bindings own and reuse one real worker-stack allocation with
   canary evidence; unbound legacy tasks retain their task-owned fallback stack.
 - Full pthread/TCB/TLS, signal, futex-owner, and thread-exit semantics are not
   represented by the guest-thread object yet.
