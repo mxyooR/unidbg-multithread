@@ -630,6 +630,7 @@ public class UniThreadDispatcher implements ThreadDispatcher {
         InvocationRecord record = new InvocationRecord(++nextInvocationId, ++nextGeneration,
                 Thread.currentThread(), task, context, runContext,
                 binding.getGuestThread(), binding, referenceScope);
+        runContext.registerInvocation(record);
         invocationByTask.put(task, record);
         record.markQueued();
         invocationQueue.addLast(record);
@@ -666,6 +667,8 @@ public class UniThreadDispatcher implements ThreadDispatcher {
                 return false;
             }
             invocationQueue.removeFirst();
+            runContext.getWaitGraph().removeOutgoing(
+                    RunWaitGraph.WaitNodeId.from(invocation));
             admission = runContext.admitCarrier(invocation, invocation.getThreadBinding());
         }
         if (invocation.admit(admission)) {
@@ -683,6 +686,7 @@ public class UniThreadDispatcher implements ThreadDispatcher {
         if (receipt != null) {
             invocation.recordCarrierRetirement(receipt);
         }
+        recordWaitDependency(invocation, task);
         if (task.canDispatch()) {
             synchronized (this) {
                 invocationQueue.addLast(invocation);
@@ -714,6 +718,7 @@ public class UniThreadDispatcher implements ThreadDispatcher {
         } else {
             invocation.markCarrierRetired(receipt);
         }
+        runContext.recordTerminal(invocation);
         synchronized (this) {
             invocationByTask.remove(invocation.getCarrier());
             invocationQueue.remove(invocation);
@@ -736,6 +741,7 @@ public class UniThreadDispatcher implements ThreadDispatcher {
         } else {
             invocation.markCarrierRetired(receipt);
         }
+        runContext.recordTerminal(invocation);
         synchronized (this) {
             invocationByTask.remove(invocation.getCarrier());
             invocationQueue.remove(invocation);
@@ -745,6 +751,12 @@ public class UniThreadDispatcher implements ThreadDispatcher {
 
     private void failInvocations(Throwable failure) {
         List<InvocationRecord> records;
+        if (runContext.getState() == RunContext.State.ACTIVE) {
+            runContext.getRootFaultController().publishRoot(
+                    runningInvocation,
+                    RootFaultController.FaultKind.RUNTIME_INTEGRITY_FAULT,
+                    failure);
+        }
         synchronized (this) {
             records = new ArrayList<>(invocationByTask.values());
             for (InvocationRecord record : records) {
@@ -768,6 +780,27 @@ public class UniThreadDispatcher implements ThreadDispatcher {
             } else {
                 record.markCarrierRetired(receipt);
             }
+            runContext.recordTerminal(record);
+        }
+    }
+
+    private void recordWaitDependency(InvocationRecord invocation, Task task) {
+        Waiter waiter = task.getWaiter();
+        if (!(waiter instanceof AddressedWaiter)) {
+            return;
+        }
+        AddressedWaiter addressed = (AddressedWaiter) waiter;
+        RunWaitGraph.WaitEdgeDraft edge = new RunWaitGraph.WaitEdgeDraft(
+                RunWaitGraph.WaitNodeId.from(invocation),
+                RunWaitGraph.WaitDependency.futex(runContext.getRunId(),
+                        addressed.getWaitAddress(), addressed.getExpectedValue()),
+                RunWaitGraph.WaitReason.FUTEX);
+        try {
+            runContext.getWaitGraph().addBatch(Collections.singletonList(edge));
+        } catch (RunWaitGraph.DependencyCycleException e) {
+            runContext.getRootFaultController().publishRoot(invocation,
+                    RootFaultController.FaultKind.DEPENDENCY_CYCLE, e);
+            throw e;
         }
     }
 
@@ -779,7 +812,10 @@ public class UniThreadDispatcher implements ThreadDispatcher {
         try {
             return runContext.retireCarrier(admission);
         } catch (RuntimeException e) {
-            runContext.quarantine(e);
+            if (runContext.getState() == RunContext.State.ACTIVE) {
+                runContext.getRootFaultController().publishRoot(invocation,
+                        RootFaultController.FaultKind.RUNTIME_INTEGRITY_FAULT, e);
+            }
             throw e;
         }
     }

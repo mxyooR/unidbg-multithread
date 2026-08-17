@@ -23,6 +23,10 @@ public final class RunContext implements AutoCloseable {
 
     private final long runId;
     private final Map<Long, GuestThreadIncarnation> threads = new LinkedHashMap<>();
+    private final Map<Long, InvocationRecord> activeInvocations = new LinkedHashMap<>();
+    private final List<InvocationEvidence> terminalLedger = new ArrayList<>();
+    private final RunWaitGraph waitGraph;
+    private final RootFaultController rootFaultController;
     private long nextThreadSerial;
     private long nextCarrierLeaseId;
     private int nextSyntheticTid = 0x10000;
@@ -39,6 +43,8 @@ public final class RunContext implements AutoCloseable {
             throw new IllegalArgumentException("runId must be positive");
         }
         this.runId = runId;
+        this.waitGraph = new RunWaitGraph(runId);
+        this.rootFaultController = new RootFaultController(this, waitGraph);
     }
 
     static RunContext detached() {
@@ -59,6 +65,43 @@ public final class RunContext implements AutoCloseable {
 
     public synchronized boolean acceptsAdmission() {
         return state == State.ACTIVE && activeLease == null;
+    }
+
+    public RunWaitGraph getWaitGraph() {
+        return waitGraph;
+    }
+
+    public RootFaultController getRootFaultController() {
+        return rootFaultController;
+    }
+
+    synchronized void registerInvocation(InvocationRecord invocation) {
+        ensureActive();
+        if (invocation == null || invocation.getRunContext() != this
+                || activeInvocations.containsKey(invocation.getInvocationId())) {
+            throw new IllegalArgumentException("invalid or duplicate invocation");
+        }
+        activeInvocations.put(invocation.getInvocationId(), invocation);
+    }
+
+    synchronized void recordTerminal(InvocationRecord invocation) {
+        if (invocation == null || invocation.getRunContext() != this
+                || invocation.getTerminal() == null || !invocation.isCarrierRetired()) {
+            throw new IllegalArgumentException("invocation lacks terminal retirement evidence");
+        }
+        if (activeInvocations.remove(invocation.getInvocationId()) != invocation) {
+            throw new IllegalStateException("invocation is not active in this run");
+        }
+        waitGraph.removeForTerminal(RunWaitGraph.WaitNodeId.from(invocation));
+        terminalLedger.add(new InvocationEvidence(invocation));
+    }
+
+    public synchronized List<InvocationRecord> getActiveInvocationsSnapshot() {
+        return Collections.unmodifiableList(new ArrayList<>(activeInvocations.values()));
+    }
+
+    public synchronized List<InvocationEvidence> getTerminalEvidenceSnapshot() {
+        return Collections.unmodifiableList(new ArrayList<>(terminalLedger));
     }
 
     public synchronized GuestThreadIncarnation registerGuestThread(int guestTid,
@@ -153,6 +196,8 @@ public final class RunContext implements AutoCloseable {
         for (GuestThreadIncarnation thread : threads.values()) {
             thread.retire();
         }
+        activeInvocations.clear();
+        waitGraph.clear();
         state = State.DISPOSED;
     }
 

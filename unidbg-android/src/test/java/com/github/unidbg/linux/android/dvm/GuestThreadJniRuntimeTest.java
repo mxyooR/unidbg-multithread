@@ -9,6 +9,7 @@ import com.github.unidbg.linux.android.AndroidEmulatorBuilder;
 import com.github.unidbg.pointer.UnidbgPointer;
 import com.github.unidbg.thread.InvocationContext;
 import com.github.unidbg.thread.InvocationOutcome;
+import com.github.unidbg.thread.InvocationEvidence;
 import com.github.unidbg.thread.ThreadTask;
 import org.junit.Test;
 
@@ -59,6 +60,13 @@ public class GuestThreadJniRuntimeTest {
             assertNotEquals(UnidbgPointer.nativeValue(vm.getJNIEnv()), first.get().longValue());
             assertNotEquals(UnidbgPointer.nativeValue(vm.getJNIEnv()), second.get().longValue());
             assertNotEquals(first.get(), second.get());
+            assertEquals(2, emulator.getThreadDispatcher().getRunContext()
+                    .getTerminalEvidenceSnapshot().size());
+            for (InvocationEvidence evidence : emulator.getThreadDispatcher()
+                    .getRunContext().getTerminalEvidenceSnapshot()) {
+                assertEquals(evidence.getAdmissions().size(), evidence.getRetirements().size());
+                assertTrue(evidence.getTerminal().isCompleted());
+            }
         } finally {
             emulator.close();
         }
