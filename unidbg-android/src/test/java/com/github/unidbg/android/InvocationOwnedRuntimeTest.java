@@ -7,10 +7,13 @@ import com.github.unidbg.arm.backend.CodeHook;
 import com.github.unidbg.arm.backend.UnHook;
 import com.github.unidbg.arm.backend.Unicorn2Factory;
 import com.github.unidbg.linux.android.AndroidEmulatorBuilder;
+import com.github.unidbg.memory.MemoryBlock;
 import com.github.unidbg.thread.GuestThreadIncarnation;
 import com.github.unidbg.thread.InvocationContext;
 import com.github.unidbg.thread.InvocationOutcome;
 import com.github.unidbg.thread.NativeWorkerTask64;
+import com.github.unidbg.thread.RootFaultController;
+import com.github.unidbg.thread.RunContext;
 import com.github.unidbg.thread.TaskStackEvidence;
 import com.github.unidbg.thread.TaskThreadBinding;
 import com.github.unidbg.thread.ThreadDispatcher;
@@ -241,6 +244,84 @@ public class InvocationOwnedRuntimeTest {
 
             dispatcher.retireGuestThread(guestThread);
             assertTrue(guestThread.isRetired());
+        } finally {
+            emulator.close();
+        }
+    }
+
+    @Test
+    public void corruptedPersistentStackCanaryQuarantinesRunAndRejectsAdmission()
+            throws Exception {
+        AndroidEmulator emulator = AndroidEmulatorBuilder.for64Bit()
+                .addBackendFactory(new Unicorn2Factory(true))
+                .setProcessName("stack-integrity-contract")
+                .build();
+        try {
+            long function = 0x100000000L;
+            Backend backend = emulator.getBackend();
+            backend.mem_map(function, 0x1000, 7);
+            backend.mem_write(function, new byte[]{
+                    0x00, 0x04, 0x00, (byte) 0x91,
+                    (byte) 0xc0, 0x03, 0x5f, (byte) 0xd6
+            });
+
+            ThreadDispatcher dispatcher = emulator.getThreadDispatcher();
+            GuestThreadIncarnation guestThread = dispatcher.registerGuestThread(
+                    0x7200, "stack-integrity-contract");
+            NativeWorkerTask64 firstTask = new NativeWorkerTask64(
+                    guestThread.getGuestTid(), function, emulator.getReturnAddress(),
+                    false, 10L);
+            dispatcher.bindGuestThread(guestThread, firstTask);
+            try (InvocationOutcome first = dispatcher.runThreadForOutcome(firstTask,
+                    InvocationContext.builder()
+                            .operation("stack-integrity-first")
+                            .origin("runtime-contract")
+                            .build())) {
+                assertTrue(first.getResult().isCompleted());
+            }
+
+            TaskStackEvidence evidence = firstTask.getStackEvidence();
+            assertNotNull(evidence);
+            MemoryBlock allocation = (MemoryBlock) evidence.getBackendAllocationIdentity();
+            allocation.getPointer().setLong(0, 0L);
+
+            NativeWorkerTask64 secondTask = new NativeWorkerTask64(
+                    guestThread.getGuestTid(), function, emulator.getReturnAddress(),
+                    false, 20L);
+            dispatcher.bindGuestThread(guestThread, secondTask);
+            try (InvocationOutcome second = dispatcher.runThreadForOutcome(secondTask,
+                    InvocationContext.builder()
+                            .operation("stack-integrity-second")
+                            .origin("runtime-contract")
+                            .build())) {
+                assertTrue(second.getResult().isFault());
+                assertNotNull(second.getResult().getFault());
+            }
+
+            RunContext runContext = dispatcher.getRunContext();
+            assertEquals(RunContext.State.QUARANTINED, runContext.getState());
+            assertTrue(runContext.getQuarantineCause() instanceof IllegalStateException);
+            assertFalse(runContext.getRootFaultController().getLedgerSnapshot().isEmpty());
+            RootFaultController.RootFaultPublication publication =
+                    runContext.getRootFaultController().getLedgerSnapshot().get(0);
+            assertEquals(RootFaultController.FaultKind.RUNTIME_INTEGRITY_FAULT,
+                    publication.getKind());
+
+            NativeWorkerTask64 rejectedTask = new NativeWorkerTask64(
+                    guestThread.getGuestTid(), function, emulator.getReturnAddress(),
+                    false, 30L);
+            boolean rejected = false;
+            try {
+                dispatcher.bindGuestThread(guestThread, rejectedTask);
+                dispatcher.runThreadForOutcome(rejectedTask,
+                        InvocationContext.builder()
+                                .operation("stack-integrity-rejected")
+                                .origin("runtime-contract")
+                                .build());
+            } catch (IllegalStateException expected) {
+                rejected = true;
+            }
+            assertTrue("quarantined run accepted a new admission", rejected);
         } finally {
             emulator.close();
         }

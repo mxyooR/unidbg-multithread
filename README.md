@@ -29,6 +29,9 @@ or other business workflow.
   exact task binding, binding epoch, GuestThread incarnation, invocation
   generation, stack allocation, and (when exposed) AArch64 `TPIDR_EL0`; stale
   restores fail closed and quarantine the run.
+- GuestThread stack-canary corruption raises a typed stack-integrity fault,
+  quarantines the run, records a root-fault publication, and rejects later
+  backend admission.
 - Invocation-scoped JNI local-reference lifetime.
 - Typed wait dependencies with atomic batch publication and cycle detection.
 - Root-fault quarantine, transitive dependent snapshots, and terminal evidence

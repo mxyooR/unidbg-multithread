@@ -107,7 +107,14 @@ public final class TaskStackEvidence {
     }
 
     public void requireCanaryIntact() {
-        region.requireCanary(readCanaryFromBackend());
+        try {
+            region.requireCanary(readCanaryFromBackend());
+        } catch (StackIntegrityException e) {
+            throw e;
+        } catch (RuntimeException e) {
+            throw new StackIntegrityException(
+                    "unable to read guest-thread stack canary", e);
+        }
     }
 
     public void requireStackPointer(long stackPointer) {

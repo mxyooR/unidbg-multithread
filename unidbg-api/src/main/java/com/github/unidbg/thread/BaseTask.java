@@ -60,8 +60,13 @@ public abstract class BaseTask implements RunnableTask {
             this.context = backend.context_alloc();
         }
         backend.context_save(this.context);
-        verifyStackState(emulator);
-        captureContextOwnership(emulator);
+        try {
+            verifyStackState(emulator);
+            captureContextOwnership(emulator);
+        } catch (StackIntegrityException e) {
+            quarantineStackIntegrity(emulator, e);
+            throw e;
+        }
     }
 
     @Override
@@ -83,16 +88,26 @@ public abstract class BaseTask implements RunnableTask {
         Backend backend = emulator.getBackend();
         validateContextOwnershipBeforeRestore(emulator);
         backend.context_restore(this.context);
-        validateRestoredTpidrEl0(emulator);
-        verifyStackState(emulator);
+        try {
+            validateRestoredTpidrEl0(emulator);
+            verifyStackState(emulator);
+        } catch (StackIntegrityException e) {
+            quarantineStackIntegrity(emulator, e);
+            throw e;
+        }
     }
 
     protected final Number continueRun(AbstractEmulator<?> emulator, long until) {
         Backend backend = emulator.getBackend();
         validateContextOwnershipBeforeRestore(emulator);
         backend.context_restore(this.context);
-        validateRestoredTpidrEl0(emulator);
-        verifyStackState(emulator);
+        try {
+            validateRestoredTpidrEl0(emulator);
+            verifyStackState(emulator);
+        } catch (StackIntegrityException e) {
+            quarantineStackIntegrity(emulator, e);
+            throw e;
+        }
         long pc;
         if (emulator.is32Bit()) {
             pc = backend.reg_read(ArmConst.UC_ARM_REG_PC).intValue() & 0xfffffffeL;
@@ -116,12 +131,18 @@ public abstract class BaseTask implements RunnableTask {
     @Override
     public void destroy(Emulator<?> emulator) {
         Backend backend = emulator.getBackend();
+        StackIntegrityException stackFailure = null;
 
         if (activeStackAllocation != null) {
-            if (stackEvidence != null) {
-                stackEvidence.requireCanaryIntact();
-            } else if (stackRegion != null) {
-                stackRegion.requireCanary(activeStackAllocation.getPointer().getLong(0));
+            try {
+                if (stackEvidence != null) {
+                    stackEvidence.requireCanaryIntact();
+                } else if (stackRegion != null) {
+                    stackRegion.requireCanary(activeStackAllocation.getPointer().getLong(0));
+                }
+            } catch (StackIntegrityException e) {
+                stackFailure = e;
+                quarantineStackIntegrity(emulator, e);
             }
         }
         if (stackBlock != null) {
@@ -140,6 +161,9 @@ public abstract class BaseTask implements RunnableTask {
         if (destroyListener != null) {
             destroyListener.onDestroy(emulator);
         }
+        if (stackFailure != null) {
+            throw stackFailure;
+        }
     }
 
     public static final int THREAD_STACK_SIZE = 0x80000;
@@ -156,8 +180,13 @@ public abstract class BaseTask implements RunnableTask {
                     ? ((Task) this).getThreadBinding() : null;
             if (binding != null && binding.isActive()) {
                 GuestThreadIncarnation guestThread = binding.getGuestThread();
-                activeStackAllocation = guestThread.acquireStackAllocation(
-                        emulator, THREAD_STACK_SIZE);
+                try {
+                    activeStackAllocation = guestThread.acquireStackAllocation(
+                            emulator, THREAD_STACK_SIZE);
+                } catch (StackIntegrityException e) {
+                    quarantineStackIntegrity(emulator, e);
+                    throw e;
+                }
                 stackRegion = guestThread.getStackRegion();
                 stackAllocationSequence = guestThread.getStackAllocationSequence();
             } else {
@@ -293,6 +322,23 @@ public abstract class BaseTask implements RunnableTask {
             captureStackEvidence(emulator);
         } else {
             stackEvidence.requireStackPointer(readStackPointer(emulator));
+        }
+    }
+
+    private static void quarantineStackIntegrity(Emulator<?> emulator,
+                                                  StackIntegrityException failure) {
+        ThreadDispatcher dispatcher = emulator.getThreadDispatcher();
+        RunContext runContext = dispatcher == null ? null : dispatcher.getRunContext();
+        if (runContext == null) {
+            return;
+        }
+        if (runContext.getState() == RunContext.State.ACTIVE) {
+            runContext.getRootFaultController().publishRoot(
+                    dispatcher.getRunningInvocation(),
+                    RootFaultController.FaultKind.RUNTIME_INTEGRITY_FAULT,
+                    failure);
+        } else if (runContext.getState() != RunContext.State.DISPOSED) {
+            runContext.quarantine(failure);
         }
     }
 

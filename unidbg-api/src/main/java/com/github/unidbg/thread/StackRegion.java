@@ -68,7 +68,8 @@ public final class StackRegion {
     public synchronized void requireContains(long stackPointer) {
         if (faulted || !contains(stackPointer)) {
             faulted = true;
-            throw new IllegalStateException("stack pointer is outside its guest-thread region");
+            throw new StackIntegrityException(
+                    "stack pointer is outside its guest-thread region");
         }
         if (stackPointer < highWaterMark) {
             highWaterMark = stackPointer;
@@ -78,7 +79,7 @@ public final class StackRegion {
     public synchronized void requireCanary(long observedCanary) {
         if (faulted || observedCanary != expectedCanary) {
             faulted = true;
-            throw new IllegalStateException("guest-thread stack canary mismatch");
+            throw new StackIntegrityException("guest-thread stack canary mismatch");
         }
     }
 
@@ -88,7 +89,7 @@ public final class StackRegion {
         }
         if (overlaps(other)) {
             faulted = true;
-            throw new IllegalStateException("guest-thread stack regions overlap");
+            throw new StackIntegrityException("guest-thread stack regions overlap");
         }
     }
 

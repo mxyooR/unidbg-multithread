@@ -78,6 +78,13 @@ admissions. This is a generic stale-context/ABA guard; it does not infer
 identity from a Java host thread, process role, command ID, or application
 workflow. Unbound legacy tasks keep the pre-runtime context path.
 
+Stack evidence is fail-closed as well. A changed canary, invalid stack pointer,
+or overlapping managed region raises `StackIntegrityException`. The dispatcher
+publishes it as a `RUNTIME_INTEGRITY_FAULT`, transitions the `RunContext` to
+`QUARANTINED`, and retires the affected carrier before publishing its
+invocation fault. A quarantined run cannot admit another carrier, so corrupted
+stack state cannot be reused by a later invocation.
+
 ## Dispatch and handoff
 
 1. The first caller atomically becomes the backend owner and starts the
@@ -244,6 +251,7 @@ the longer-term thread-semantics goals in the architecture notes:
 | Strict LIFO continuation contract | Model implemented | Wrong parent, thread, epoch, depth, and completion order are rejected |
 | Synchronous owner-thread nested backend execution | Not implemented | The public path rejects it to avoid a FIFO deadlock |
 | Persistent guest-thread stack allocation and canary evidence | Implemented for managed bindings | `StackRegion` owns logical bounds; `TaskStackEvidence` reads the real backend canary and entry SP; saved CPU context remains task-stored but ownership-checked |
+| Stack-integrity quarantine after canary or bounds failure | Implemented | `StackIntegrityException`, root-fault publication, carrier retirement, and admission rejection are covered by the generic Unicorn2 negative-control test |
 | Full pthread/TCB/TLS, signal, futex-owner, and thread-exit semantics | Not implemented | No claim of complete Android kernel or Bionic thread emulation |
 | Uniform behavior across optional native backends | Not claimed | Exact stop evidence is currently verified most directly with Unicorn2 |
 
@@ -286,6 +294,8 @@ The current generic contracts include:
   carriers and advances its binding epoch;
 - managed carriers reuse the same backend stack allocation for one guest thread,
   with a read-back canary and entry-SP evidence;
+- corrupting that managed canary produces an invocation fault, quarantines the
+  run, and rejects a subsequent carrier admission;
 - saved backend contexts reject a rebound task binding and a stale invocation
   generation before native restore;
 - errno and pending JNI exceptions do not cross guest-thread boundaries;
