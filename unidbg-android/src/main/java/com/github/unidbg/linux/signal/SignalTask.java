@@ -78,6 +78,7 @@ public class SignalTask extends AbstractSignalTask {
             backend.reg_write(Arm64Const.UC_ARM64_REG_X2, UnidbgPointer.nativeValue(ucontext.getPointer()));
             backend.reg_write(Arm64Const.UC_ARM64_REG_LR, emulator.getReturnAddress());
         }
+        captureStackEvidence(emulator);
         return emulator.emulate(action.getSaHandler(), emulator.getReturnAddress());
     }
 

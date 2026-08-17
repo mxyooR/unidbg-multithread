@@ -162,6 +162,27 @@ public class GuestThreadRuntimeTest {
         assertEquals(0, stack.depth());
     }
 
+    @Test
+    public void stackRegionTracksHighWaterAndDisjointness() {
+        StackRegion first = new StackRegion(0x1008, 0x2008,
+                0x1000, 0x1122334455667788L);
+        first.requireCanary(0x1122334455667788L);
+        first.requireContains(0x1f08);
+        assertEquals(0x1f08L, first.getHighWaterMark());
+
+        StackRegion second = new StackRegion(0x3008, 0x4008,
+                0x3000, 0x8877665544332211L);
+        first.requireDisjoint(second);
+        assertTrue(!first.overlaps(second));
+
+        try {
+            first.requireCanary(0L);
+            fail("canary corruption was accepted");
+        } catch (IllegalStateException expected) {
+            assertTrue(first.isFaulted());
+        }
+    }
+
     private static final class NoopTask extends ThreadTask {
         private NoopTask(int tid) {
             super(tid, 0x1000);

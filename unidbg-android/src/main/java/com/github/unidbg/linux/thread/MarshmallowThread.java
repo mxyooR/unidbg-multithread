@@ -66,6 +66,7 @@ public class MarshmallowThread extends ThreadTask {
             backend.reg_write(Arm64Const.UC_ARM64_REG_TPIDR_EL0, UnidbgPointer.nativeValue(tls));
             backend.reg_write(Arm64Const.UC_ARM64_REG_LR, until);
         }
+        captureStackEvidence(emulator);
         return emulator.emulate(this.fn.peer, until);
     }
 

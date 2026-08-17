@@ -28,6 +28,7 @@ public final class NativeWorkerTask32 extends ThreadTask {
         Backend backend = emulator.getBackend();
         UnidbgPointer stack = allocateStack(emulator);
         ARM.initArgs(emulator, paddingArgument, stack.peer, arguments);
+        captureStackEvidence(emulator);
         backend.reg_write(ArmConst.UC_ARM_REG_LR, until);
         return emulator.emulate(address, until);
     }

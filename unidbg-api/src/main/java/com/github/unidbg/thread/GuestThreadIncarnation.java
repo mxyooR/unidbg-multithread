@@ -1,5 +1,8 @@
 package com.github.unidbg.thread;
 
+import com.github.unidbg.Emulator;
+import com.github.unidbg.memory.MemoryBlock;
+
 /**
  * Stable identity for one guest thread incarnation. A host Java thread is not
  * used as guest identity because a carrier may move between host threads.
@@ -13,6 +16,10 @@ public final class GuestThreadIncarnation {
     private final GuestThreadExecutionState executionState = new GuestThreadExecutionState();
     private final InvocationStack invocationStack = new InvocationStack();
     private TaskThreadBinding activeBinding;
+    private MemoryBlock stackAllocation;
+    private Emulator<?> stackEmulator;
+    private StackRegion stackRegion;
+    private long stackAllocationSequence;
     private boolean retired;
 
     GuestThreadIncarnation(RunContext runContext, long incarnationId, int guestTid,
@@ -45,6 +52,54 @@ public final class GuestThreadIncarnation {
 
     public InvocationStack getInvocationStack() {
         return invocationStack;
+    }
+
+    /** Logical stack bounds owned by this guest thread after first entry. */
+    public synchronized StackRegion getStackRegion() {
+        return stackRegion;
+    }
+
+    synchronized MemoryBlock acquireStackAllocation(Emulator<?> emulator,
+                                                    int stackSize) {
+        if (emulator == null || retired) {
+            throw new IllegalStateException("guest thread stack is not available");
+        }
+        if (stackAllocation != null) {
+            if (stackEmulator != emulator) {
+                throw new IllegalStateException("guest thread stack belongs to another emulator");
+            }
+            if (stackRegion.getTop() - stackRegion.getLowerBound() != stackSize) {
+                throw new IllegalStateException("guest thread stack size changed");
+            }
+            stackRegion.requireCanary(stackAllocation.getPointer().getLong(0));
+            return stackAllocation;
+        }
+
+        long sequence = TaskStackEvidence.nextAllocationSequence();
+        MemoryBlock allocation = emulator.getMemory().malloc(
+                stackSize + TaskStackEvidence.CANARY_SIZE, true);
+        boolean installed = false;
+        try {
+            StackRegion region = TaskStackEvidence.initializeRegion(
+                    allocation, stackSize, sequence);
+            stackAllocation = allocation;
+            stackEmulator = emulator;
+            stackRegion = region;
+            stackAllocationSequence = sequence;
+            installed = true;
+            return allocation;
+        } finally {
+            if (!installed) {
+                allocation.free();
+            }
+        }
+    }
+
+    synchronized long getStackAllocationSequence() {
+        if (stackAllocation == null) {
+            throw new IllegalStateException("guest thread stack is not allocated");
+        }
+        return stackAllocationSequence;
     }
 
     public synchronized TaskThreadBinding bind(Task task) {
@@ -103,6 +158,11 @@ public final class GuestThreadIncarnation {
         executionState.beginRetirement();
         executionState.retire();
         invocationStack.clear();
+        if (stackAllocation != null) {
+            stackAllocation.free();
+            stackAllocation = null;
+            stackEmulator = null;
+        }
     }
 
     public synchronized boolean isRetired() {

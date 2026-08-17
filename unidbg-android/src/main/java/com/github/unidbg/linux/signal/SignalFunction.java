@@ -58,6 +58,7 @@ public class SignalFunction extends MainTask {
             backend.reg_write(Arm64Const.UC_ARM64_REG_X2, 0); // void *ucontext
             backend.reg_write(Arm64Const.UC_ARM64_REG_LR, until);
         }
+        captureStackEvidence(emulator);
         return emulator.emulate(action.getSaHandler(), until);
     }
 

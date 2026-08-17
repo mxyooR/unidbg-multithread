@@ -11,6 +11,7 @@ import com.github.unidbg.thread.GuestThreadIncarnation;
 import com.github.unidbg.thread.InvocationContext;
 import com.github.unidbg.thread.InvocationOutcome;
 import com.github.unidbg.thread.NativeWorkerTask64;
+import com.github.unidbg.thread.TaskStackEvidence;
 import com.github.unidbg.thread.TaskThreadBinding;
 import com.github.unidbg.thread.ThreadDispatcher;
 import org.junit.Test;
@@ -22,6 +23,7 @@ import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertSame;
 import static org.junit.Assert.assertTrue;
@@ -193,6 +195,13 @@ public class InvocationOwnedRuntimeTest {
                 assertSame(guestThread, first.getInvocation().getGuestThread());
             }
 
+            TaskStackEvidence firstStack = firstTask.getStackEvidence();
+            assertNotNull(firstStack);
+            assertSame(guestThread.getStackRegion(), firstStack.getRegion());
+            assertTrue(firstStack.getRegion().contains(firstStack.getEntrySp()));
+            assertEquals(firstStack.getCanaryReadBack(),
+                    firstStack.readCanaryFromBackend());
+
             assertFalse(guestThread.isRetired());
             assertNull(guestThread.getActiveBinding());
             assertEquals(91, guestThread.getExecutionState().getErrno());
@@ -214,6 +223,15 @@ public class InvocationOwnedRuntimeTest {
                 assertEquals(Long.valueOf(21L), second.getValue());
                 assertSame(guestThread, second.getInvocation().getGuestThread());
             }
+
+            TaskStackEvidence secondStack = secondTask.getStackEvidence();
+            assertNotNull(secondStack);
+            assertSame(firstStack.getBackendAllocationIdentity(),
+                    secondStack.getBackendAllocationIdentity());
+            assertSame(firstStack.getRegion(), secondStack.getRegion());
+            assertEquals(firstStack.getAllocationSequence(),
+                    secondStack.getAllocationSequence());
+            secondStack.requireCanaryIntact();
 
             assertFalse(guestThread.isRetired());
             assertNull(guestThread.getActiveBinding());

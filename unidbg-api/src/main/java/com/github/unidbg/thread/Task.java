@@ -18,6 +18,11 @@ public interface Task extends SignalOps, RunnableTask {
         return null;
     }
 
+    /** Physical stack evidence captured for this carrier entry, if allocated. */
+    default TaskStackEvidence getStackEvidence() {
+        return null;
+    }
+
     Number dispatch(AbstractEmulator<?> emulator) throws PopContextException;
 
     boolean isMainThread();

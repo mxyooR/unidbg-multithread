@@ -23,6 +23,8 @@ or other business workflow.
   must share thread-scoped state across invocation carriers.
 - Per-guest-thread `errno`, `JNIEnv` attachment, pending exception, and
   attachment state.
+- GuestThread-owned native stack allocation for managed bindings, with real
+  backend canary read-back and carrier `TaskStackEvidence`.
 - Invocation-scoped JNI local-reference lifetime.
 - Typed wait dependencies with atomic batch publication and cycle detection.
 - Root-fault quarantine, transitive dependent snapshots, and terminal evidence
@@ -43,8 +45,9 @@ This project does not yet claim production-complete guest threading:
 - Synchronous guest re-entry from the current dispatcher owner is validated as
   a contract but is currently rejected; nested backend execution is not wired
   through a real callback return boundary yet.
-- CPU register contexts and physical worker stacks remain task-owned. Persistent
-  guest-thread stack regions are part of the ongoing migration.
+- CPU register contexts and continuation snapshots remain task-owned. Managed
+  GuestThread bindings now own and reuse one real worker-stack allocation with
+  canary evidence; unbound legacy tasks retain their task-owned fallback stack.
 - Full pthread/TCB/TLS, signal, futex-owner, and thread-exit semantics are not
   represented by the guest-thread object yet.
 - Cancellation and timeout are cooperative and depend on a supported stop
@@ -61,7 +64,7 @@ The implementation separates four identities:
 | Layer | Responsibility |
 | --- | --- |
 | `RunContext` | Run identity, guest-thread registry, invocation records, wait graph, fault state, and terminal evidence |
-| `GuestThreadIncarnation` | Stable guest-thread incarnation, guest TID, errno, `JNIEnv`, pending exception, and continuation stack |
+| `GuestThreadIncarnation` | Stable guest-thread incarnation, guest TID, errno, `JNIEnv`, pending exception, `StackRegion`, and continuation stack |
 | `InvocationRecord` | One call's context, completion, JNI local-reference scope, and terminal state |
 | `CarrierLease` | Temporary proof that one invocation may drive the backend |
 

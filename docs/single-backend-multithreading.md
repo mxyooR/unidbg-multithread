@@ -35,7 +35,7 @@ The runtime separates four identities:
 | Layer | Owns | Does not own |
 | --- | --- | --- |
 | `RunContext` | one emulator-run identity, guest-thread registry, active invocations, wait graph, fault and terminal evidence | application workflow |
-| `GuestThreadIncarnation` | stable incarnation ID, guest TID, errno, `JNIEnv`, pending exception, thread attachments, invocation stack | one host Java thread |
+| `GuestThreadIncarnation` | stable incarnation ID, guest TID, errno, `JNIEnv`, pending exception, thread attachments, `StackRegion`, invocation stack | one host Java thread |
 | `InvocationRecord` | one call ID and generation, immutable context, completion, JNI local-reference scope, terminal | persistent guest-thread identity |
 | `CarrierLease` | temporary permission to drive the backend, proven by admission and retirement receipts | guest TID or JNI identity |
 
@@ -51,9 +51,12 @@ thread-scoped state across several invocation carriers can instead call
 binding has ended. Each rebind advances the binding epoch without changing the
 guest-thread incarnation, errno, JNI attachment, or pending-exception owner.
 
-The current physical register context and worker stack remain owned by the
-`Task`. Moving persistent stack ownership into `GuestThreadIncarnation` is a
-remaining part of the migration.
+Managed bindings allocate one real worker stack through the
+`GuestThreadIncarnation`. The logical `StackRegion` and its canary remain live
+after a carrier is retired, and each carrier records its exact entry SP in a
+`TaskStackEvidence` object. Backend register contexts and continuation
+snapshots are still task-owned; tasks without a runtime binding use the legacy
+task-owned stack fallback.
 
 ## Dispatch and handoff
 
@@ -219,7 +222,7 @@ the longer-term thread-semantics goals in the architecture notes:
 | Typed wait graph, cycle rejection, fault quarantine, and terminal ledger | Implemented | `RunWaitGraph`, `RootFaultController`, and evidence tests |
 | Strict LIFO continuation contract | Model implemented | Wrong parent, thread, epoch, depth, and completion order are rejected |
 | Synchronous owner-thread nested backend execution | Not implemented | The public path rejects it to avoid a FIFO deadlock |
-| Persistent guest-thread stack ownership and canary evidence | In progress | Physical CPU context and worker stack remain task-owned |
+| Persistent guest-thread stack allocation and canary evidence | Implemented for managed bindings | `StackRegion` owns logical bounds; `TaskStackEvidence` reads the real backend canary and entry SP; CPU context remains task-owned |
 | Full pthread/TCB/TLS, signal, futex-owner, and thread-exit semantics | Not implemented | No claim of complete Android kernel or Bionic thread emulation |
 | Uniform behavior across optional native backends | Not claimed | Exact stop evidence is currently verified most directly with Unicorn2 |
 
@@ -260,6 +263,8 @@ The current generic contracts include:
 - guest threads have distinct live TIDs, incarnation IDs, and `JNIEnv` pointers;
 - an explicit guest thread preserves thread state across multiple invocation
   carriers and advances its binding epoch;
+- managed carriers reuse the same backend stack allocation for one guest thread,
+  with a read-back canary and entry-SP evidence;
 - errno and pending JNI exceptions do not cross guest-thread boundaries;
 - admission and retirement receipts balance in terminal evidence;
 - cancellation, timeout, ownership mismatch, and two-latch reference cleanup;
@@ -274,8 +279,9 @@ The current generic contracts include:
   or multi-core memory-consistency model.
 - Synchronous owner-thread guest re-entry has a model contract but no production
   nested-backend path and is rejected.
-- Worker CPU contexts and physical stack allocations are task-owned, not yet
-  persistent guest-thread-owned stack regions with canary evidence.
+- Backend CPU contexts and continuation snapshots remain task-owned. Managed
+  bindings use persistent GuestThread-owned stack regions with canary evidence;
+  unbound legacy tasks still use task-owned fallback stacks.
 - Full pthread/TCB/TLS, signal, futex-owner, and thread-exit semantics are not
   yet represented by the guest-thread object.
 - Cancellation depends on reaching a supported stop point. The current run
@@ -294,10 +300,11 @@ The current generic contracts include:
 
 A generic integration may implement another `ThreadTask` and call
 `ThreadDispatcher.runThreadForOutcome`. It must initialize all guest-visible
-registers, use an isolated task stack, and let the dispatcher own backend
-admission. Application routing, command IDs, readiness rules, and SO-specific
-state belong above this runtime and must not be added to dispatcher or guest
-identity code.
+registers, bind a carrier before dispatch, and let the dispatcher own backend
+admission. Managed bindings receive a GuestThread-owned stack allocation;
+unbound legacy tasks retain the isolated task-stack fallback. Application
+routing, command IDs, readiness rules, and SO-specific state belong above this
+runtime and must not be added to dispatcher or guest identity code.
 
 When several tasks represent successive calls on one logical guest thread,
 register that guest thread once and bind each task before submission. The

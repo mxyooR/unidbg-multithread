@@ -59,6 +59,7 @@ public abstract class BaseTask implements RunnableTask {
             this.context = backend.context_alloc();
         }
         backend.context_save(this.context);
+        verifyStackState(emulator);
     }
 
     @Override
@@ -79,11 +80,13 @@ public abstract class BaseTask implements RunnableTask {
     public void restoreContext(Emulator<?> emulator) {
         Backend backend = emulator.getBackend();
         backend.context_restore(this.context);
+        verifyStackState(emulator);
     }
 
     protected final Number continueRun(AbstractEmulator<?> emulator, long until) {
         Backend backend = emulator.getBackend();
         backend.context_restore(this.context);
+        verifyStackState(emulator);
         long pc;
         if (emulator.is32Bit()) {
             pc = backend.reg_read(ArmConst.UC_ARM_REG_PC).intValue() & 0xfffffffeL;
@@ -108,10 +111,19 @@ public abstract class BaseTask implements RunnableTask {
     public void destroy(Emulator<?> emulator) {
         Backend backend = emulator.getBackend();
 
+        if (activeStackAllocation != null) {
+            if (stackEvidence != null) {
+                stackEvidence.requireCanaryIntact();
+            } else if (stackRegion != null) {
+                stackRegion.requireCanary(activeStackAllocation.getPointer().getLong(0));
+            }
+        }
         if (stackBlock != null) {
             stackBlock.free();
             stackBlock = null;
         }
+        activeStackAllocation = null;
+        stackRegion = null;
 
         if (this.context != 0) {
             backend.context_free(this.context);
@@ -126,12 +138,71 @@ public abstract class BaseTask implements RunnableTask {
     public static final int THREAD_STACK_SIZE = 0x80000;
 
     private MemoryBlock stackBlock;
+    private MemoryBlock activeStackAllocation;
+    private StackRegion stackRegion;
+    private long stackAllocationSequence;
+    private TaskStackEvidence stackEvidence;
 
     protected final UnidbgPointer allocateStack(Emulator<?> emulator) {
-        if (stackBlock == null) {
-            stackBlock = emulator.getMemory().malloc(THREAD_STACK_SIZE, true);
+        if (activeStackAllocation == null) {
+            TaskThreadBinding binding = this instanceof Task
+                    ? ((Task) this).getThreadBinding() : null;
+            if (binding != null && binding.isActive()) {
+                GuestThreadIncarnation guestThread = binding.getGuestThread();
+                activeStackAllocation = guestThread.acquireStackAllocation(
+                        emulator, THREAD_STACK_SIZE);
+                stackRegion = guestThread.getStackRegion();
+                stackAllocationSequence = guestThread.getStackAllocationSequence();
+            } else {
+                stackAllocationSequence = TaskStackEvidence.nextAllocationSequence();
+                stackBlock = emulator.getMemory().malloc(
+                        THREAD_STACK_SIZE + TaskStackEvidence.CANARY_SIZE, true);
+                activeStackAllocation = stackBlock;
+                stackRegion = TaskStackEvidence.initializeRegion(stackBlock,
+                        THREAD_STACK_SIZE, stackAllocationSequence);
+            }
         }
-        return stackBlock.getPointer().share(THREAD_STACK_SIZE, 0);
+        return activeStackAllocation.getPointer().share(
+                TaskStackEvidence.CANARY_SIZE + THREAD_STACK_SIZE, 0);
+    }
+
+    /** Captures the exact entry SP after arguments and ABI alignment are set. */
+    protected final void captureStackEvidence(Emulator<?> emulator) {
+        if (activeStackAllocation == null || stackRegion == null) {
+            throw new IllegalStateException("task stack is not allocated");
+        }
+        long stackPointer = readStackPointer(emulator);
+        TaskStackEvidence candidate = TaskStackEvidence.fromBackendAllocation(
+                activeStackAllocation, stackRegion, stackPointer,
+                stackAllocationSequence);
+        if (stackEvidence != null
+                && stackEvidence.getBackendAllocationIdentity()
+                != candidate.getBackendAllocationIdentity()) {
+            throw new IllegalStateException("task stack allocation identity changed");
+        }
+        stackEvidence = candidate;
+    }
+
+    public final TaskStackEvidence getStackEvidence() {
+        return stackEvidence;
+    }
+
+    private void verifyStackState(Emulator<?> emulator) {
+        if (activeStackAllocation == null || stackRegion == null) {
+            return;
+        }
+        if (stackEvidence == null) {
+            captureStackEvidence(emulator);
+        } else {
+            stackEvidence.requireStackPointer(readStackPointer(emulator));
+        }
+    }
+
+    private static long readStackPointer(Emulator<?> emulator) {
+        Backend backend = emulator.getBackend();
+        return emulator.is32Bit()
+                ? backend.reg_read(ArmConst.UC_ARM_REG_SP).intValue() & 0xffffffffL
+                : backend.reg_read(Arm64Const.UC_ARM64_REG_SP).longValue();
     }
 
     @Override

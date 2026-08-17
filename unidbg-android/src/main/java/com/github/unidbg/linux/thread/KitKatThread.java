@@ -50,6 +50,7 @@ public class KitKatThread extends ThreadTask {
         backend.reg_write(ArmConst.UC_ARM_REG_R1, this.arg == null ? 0 : this.arg.peer);
         backend.reg_write(ArmConst.UC_ARM_REG_R2, this.child_stack.peer);
         backend.reg_write(ArmConst.UC_ARM_REG_LR, until);
+        captureStackEvidence(emulator);
 
         Module libc = emulator.getMemory().findModule("libc.so");
         Symbol __thread_entry = libc.findSymbolByName("__thread_entry", false);
