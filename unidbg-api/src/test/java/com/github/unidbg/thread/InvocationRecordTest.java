@@ -31,8 +31,8 @@ public class InvocationRecordTest {
         assertTrue(record.suspend());
         record.markQueued();
         assertTrue(record.admit());
-        assertTrue(record.complete(InvocationResult.completed(7L)));
         record.markCarrierRetired();
+        assertTrue(record.complete(InvocationResult.completed(7L)));
 
         InvocationOutcome outcome = record.await(1, TimeUnit.SECONDS);
         assertNotNull(outcome);
@@ -67,10 +67,10 @@ public class InvocationRecordTest {
         assertFalse(record.complete(InvocationResult.completed(9L)));
         assertFalse(record.finishRequestedTermination());
         assertTrue(record.beginQuiescing());
+        record.markCarrierRetired();
         assertTrue(record.finishRequestedTermination());
         assertEquals(InvocationRecord.State.CANCELLED, record.getState());
 
-        record.markCarrierRetired();
         InvocationOutcome outcome = record.await(1, TimeUnit.SECONDS);
         assertTrue(outcome.getResult().isCancelled());
         assertEquals("caller cancelled", outcome.getResult().getDetail());
@@ -85,6 +85,7 @@ public class InvocationRecordTest {
         record.markQueued();
         assertTrue(record.requestTimeout("deadline reached"));
         assertTrue(record.beginQuiescing());
+        record.markCarrierRetired();
         assertTrue(record.finishRequestedTermination());
 
         InvocationOutcome outcome = record.await(1, TimeUnit.SECONDS);
@@ -98,8 +99,8 @@ public class InvocationRecordTest {
         InvocationRecord record = newRecord(5L, null);
         record.markQueued();
         assertTrue(record.admit());
-        assertTrue(record.complete(InvocationResult.completed(1L)));
         record.markCarrierRetired();
+        assertTrue(record.complete(InvocationResult.completed(1L)));
         InvocationOutcome outcome = record.await(1, TimeUnit.SECONDS);
         outcome.acknowledgeOutcome();
 
@@ -114,6 +115,7 @@ public class InvocationRecordTest {
         InvocationRecord record = newRecord(6L, null);
         record.markQueued();
         assertTrue(record.admit());
+        record.markCarrierRetired();
         InvocationResult.Ownership other = new InvocationResult.Ownership(
                 99L, 99L, Thread.currentThread().getId(), "other", "other-entry");
         InvocationResult foreign = InvocationResult.completed(3L).withOwnership(other);
@@ -125,6 +127,27 @@ public class InvocationRecordTest {
             assertNull(record.getTerminal());
             assertEquals(InvocationRecord.State.ADMITTED, record.getState());
         }
+    }
+
+    @Test
+    public void terminalCannotWakeCallerBeforeCarrierRetirement() throws Exception {
+        InvocationRecord record = newRecord(7L, null);
+        record.markQueued();
+        assertTrue(record.admit());
+
+        try {
+            record.complete(InvocationResult.completed(5L));
+            fail("terminal was published before carrier retirement");
+        } catch (IllegalStateException expected) {
+            assertFalse(record.isDone());
+            assertNull(record.getTerminal());
+        }
+
+        record.markCarrierRetired();
+        assertTrue(record.complete(InvocationResult.completed(5L)));
+        InvocationOutcome outcome = record.await(1, TimeUnit.SECONDS);
+        assertTrue(outcome.getInvocation().isCarrierRetired());
+        assertEquals(Long.valueOf(5L), outcome.getValue());
     }
 
     private static InvocationRecord newRecord(long id, InvocationReferenceScope scope) {

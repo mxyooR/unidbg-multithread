@@ -234,7 +234,12 @@ public final class InvocationRecord {
         if (result.isCompleted() && isTerminationRequested()) {
             return false;
         }
-        terminal = result.withOwnership(ownership);
+        InvocationResult owned = result.withOwnership(ownership);
+        if (!carrierRetired) {
+            throw new IllegalStateException(
+                    "invocation terminal cannot precede carrier retirement");
+        }
+        terminal = owned;
         state = State.TERMINAL;
         completion.complete(new InvocationOutcome(this, terminal));
         return true;
@@ -246,6 +251,10 @@ public final class InvocationRecord {
         }
         if (state != State.QUIESCING) {
             return false;
+        }
+        if (!carrierRetired) {
+            throw new IllegalStateException(
+                    "requested terminal cannot precede carrier retirement");
         }
         InvocationResult requested = requestedTerminal == null
                 ? InvocationResult.cancelled("invocation cancelled") : requestedTerminal;

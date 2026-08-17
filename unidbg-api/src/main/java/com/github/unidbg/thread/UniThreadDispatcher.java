@@ -490,14 +490,16 @@ public class UniThreadDispatcher implements ThreadDispatcher {
                                 if (!terminationRequested) {
                                     task.setResult(emulator, ret);
                                 }
+                                retireInvocationCarrier(invocation);
                                 destroyTask(task);
                                 synchronized (this) {
                                     iterator.remove();
                                 }
                                 if (terminationRequested) {
-                                    finishRequestedTermination(invocation);
+                                    publishRequestedTermination(invocation);
                                 } else {
-                                    finishInvocation(invocation, InvocationResult.completed(ret));
+                                    publishInvocationTerminal(invocation,
+                                            InvocationResult.completed(ret));
                                 }
                                 if(task.isMainThread()) {
                                     mainCompleted = true;
@@ -520,8 +522,13 @@ public class UniThreadDispatcher implements ThreadDispatcher {
                             this.runningTask.popContext(emulator);
                         } catch (RuntimeException e) {
                             if (invocation != null) {
-                                destroyTask(task);
-                                finishInvocation(invocation, InvocationResult.fault(
+                                retireInvocationCarrier(invocation);
+                                try {
+                                    destroyTask(task);
+                                } catch (RuntimeException cleanupFailure) {
+                                    e.addSuppressed(cleanupFailure);
+                                }
+                                publishInvocationTerminal(invocation, InvocationResult.fault(
                                         "dispatcher task failed", e));
                                 iterator.remove();
                             } else {
@@ -707,16 +714,28 @@ public class UniThreadDispatcher implements ThreadDispatcher {
         }
     }
 
-    private void finishInvocation(InvocationRecord invocation, InvocationResult result) {
+    private void retireInvocationCarrier(InvocationRecord invocation) {
         if (invocation == null) {
             return;
         }
+        if (invocation.isCarrierRetired()) {
+            return;
+        }
         CarrierRetirementReceipt receipt = retireActiveCarrierLease(invocation);
-        invocation.complete(result);
         if (receipt == null) {
             invocation.markCarrierRetired();
         } else {
             invocation.markCarrierRetired(receipt);
+        }
+    }
+
+    private void publishInvocationTerminal(InvocationRecord invocation,
+                                           InvocationResult result) {
+        if (invocation == null) {
+            return;
+        }
+        if (!invocation.complete(result)) {
+            throw new IllegalStateException("invocation rejected its terminal result");
         }
         runContext.recordTerminal(invocation);
         synchronized (this) {
@@ -727,19 +746,16 @@ public class UniThreadDispatcher implements ThreadDispatcher {
 
     private void retireCancelledInvocation(Iterator<Task> iterator, Task task,
                                            InvocationRecord invocation) {
+        invocation.beginQuiescing();
+        retireInvocationCarrier(invocation);
         destroyTask(task);
         iterator.remove();
-        finishRequestedTermination(invocation);
+        publishRequestedTermination(invocation);
     }
 
-    private void finishRequestedTermination(InvocationRecord invocation) {
-        CarrierRetirementReceipt receipt = retireActiveCarrierLease(invocation);
-        invocation.beginQuiescing();
-        invocation.finishRequestedTermination();
-        if (receipt == null) {
-            invocation.markCarrierRetired();
-        } else {
-            invocation.markCarrierRetired(receipt);
+    private void publishRequestedTermination(InvocationRecord invocation) {
+        if (!invocation.finishRequestedTermination()) {
+            throw new IllegalStateException("invocation rejected its requested terminal");
         }
         runContext.recordTerminal(invocation);
         synchronized (this) {
@@ -768,17 +784,14 @@ public class UniThreadDispatcher implements ThreadDispatcher {
             invocationQueue.clear();
         }
         for (InvocationRecord record : records) {
+            retireInvocationCarrier(record);
             try {
                 destroyTask(record.getCarrier());
             } catch (RuntimeException cleanupFailure) {
                 failure.addSuppressed(cleanupFailure);
             }
-            CarrierRetirementReceipt receipt = retireActiveCarrierLease(record);
-            record.complete(InvocationResult.fault("dispatcher stopped", failure));
-            if (receipt == null) {
-                record.markCarrierRetired();
-            } else {
-                record.markCarrierRetired(receipt);
+            if (!record.complete(InvocationResult.fault("dispatcher stopped", failure))) {
+                throw new IllegalStateException("invocation rejected dispatcher fault");
             }
             runContext.recordTerminal(record);
         }
