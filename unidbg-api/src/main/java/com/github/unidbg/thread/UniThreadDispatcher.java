@@ -65,6 +65,11 @@ public class UniThreadDispatcher implements ThreadDispatcher {
         return dispatching && dispatchOwner != Thread.currentThread();
     }
 
+    @Override
+    public boolean isBackendOwnedByAnotherThread() {
+        return isDispatchingOnOtherThread();
+    }
+
     /** Used by the emulator to decide whether a native instruction budget is useful. */
     public boolean hasMultipleRunnableSources() {
         return getTaskCount() > 1 || !externalTaskQueue.isEmpty();
@@ -76,7 +81,19 @@ public class UniThreadDispatcher implements ThreadDispatcher {
 
     @Override
     public InvocationRecord getRunningInvocation() {
-        return runningInvocation;
+        return dispatchOwner == Thread.currentThread() ? runningInvocation : null;
+    }
+
+    /** True when the current backend run has a queued handoff or cancellation. */
+    public synchronized boolean shouldYieldCurrentTask() {
+        InvocationRecord current = runningInvocation;
+        if (current != null && current.isTerminationRequested()) {
+            return true;
+        }
+        if (!externalTaskQueue.isEmpty()) {
+            return true;
+        }
+        return !invocationQueue.isEmpty() && invocationQueue.peekFirst() != current;
     }
 
     /** Snapshot including pending and externally submitted tasks. */
@@ -167,8 +184,8 @@ public class UniThreadDispatcher implements ThreadDispatcher {
                 InvocationContext.builder().operation("thread-task").origin("ThreadDispatcher").build());
         try {
             InvocationResult result = outcome.getResult();
-            if (result.isFault() && result.getFault() != null) {
-                throw new IllegalStateException("guest invocation failed", result.getFault());
+            if (!result.isCompleted()) {
+                throw invocationFailure(result);
             }
             return outcome.getValue();
         } finally {
@@ -178,12 +195,19 @@ public class UniThreadDispatcher implements ThreadDispatcher {
 
     @Override
     public InvocationOutcome runThreadForOutcome(ThreadTask task, InvocationContext context) {
-        InvocationRecord record = submitInvocation(task, context, null);
+        return runThreadForOutcome(task, context, null);
+    }
+
+    @Override
+    public InvocationOutcome runThreadForOutcome(ThreadTask task, InvocationContext context,
+                                                  InvocationReferenceScope referenceScope) {
+        InvocationRecord record = submitInvocation(task, context, referenceScope);
         try {
             return record.await();
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
-            record.requestCancellation("host thread interrupted");
+            cancelInvocation(record, "host thread interrupted");
+            record.acknowledgeOutcome();
             throw new IllegalStateException("interrupted while waiting for invocation", e);
         } catch (java.util.concurrent.ExecutionException e) {
             Throwable cause = e.getCause();
@@ -192,6 +216,12 @@ public class UniThreadDispatcher implements ThreadDispatcher {
             }
             throw new IllegalStateException("guest invocation failed", cause);
         }
+    }
+
+    private static IllegalStateException invocationFailure(InvocationResult result) {
+        String detail = result.getDetail() == null
+                ? "guest invocation ended with " + result.getState() : result.getDetail();
+        return new IllegalStateException(detail, result.getFault());
     }
 
     @Override
@@ -228,6 +258,22 @@ public class UniThreadDispatcher implements ThreadDispatcher {
             run(0, null);
         }
         return record;
+    }
+
+    @Override
+    public boolean cancelInvocation(InvocationRecord invocation, String detail) {
+        if (invocation == null) {
+            return false;
+        }
+        synchronized (this) {
+            if (invocationByTask.get(invocation.getCarrier()) != invocation
+                    || !invocation.requestCancellation(detail)) {
+                return false;
+            }
+            notifyAll();
+        }
+        requestBackendStop();
+        return true;
     }
 
     @Override
@@ -293,8 +339,12 @@ public class UniThreadDispatcher implements ThreadDispatcher {
                     if (task.isFinish()) {
                         continue;
                     }
+                    InvocationRecord invocation = invocationFor(task);
+                    if (invocation != null && invocation.isTerminationRequested()) {
+                        retireCancelledInvocation(iterator, task, invocation);
+                        continue;
+                    }
                     if (task.canDispatch()) {
-                        InvocationRecord invocation = invocationFor(task);
                         if (invocation != null && !admitInvocation(invocation)) {
                             continue;
                         }
@@ -355,13 +405,18 @@ public class UniThreadDispatcher implements ThreadDispatcher {
                                     break;
                                 }
                             } else {
-                                task.saveContext(emulator);
-                                suspendInvocation(invocation, task);
+                                if (invocation != null && invocation.isTerminationRequested()) {
+                                    retireCancelledInvocation(iterator, task, invocation);
+                                } else {
+                                    task.saveContext(emulator);
+                                    suspendInvocation(invocation, task);
+                                }
                             }
                         } catch(PopContextException e) {
                             this.runningTask.popContext(emulator);
                         } catch (RuntimeException e) {
                             if (invocation != null) {
+                                task.destroy(emulator);
                                 finishInvocation(invocation, InvocationResult.fault(
                                         "dispatcher task failed", e));
                                 iterator.remove();
@@ -494,6 +549,20 @@ public class UniThreadDispatcher implements ThreadDispatcher {
         synchronized (this) {
             invocationByTask.remove(invocation.getCarrier());
             invocationQueue.remove(invocation);
+        }
+    }
+
+    private void retireCancelledInvocation(Iterator<Task> iterator, Task task,
+                                           InvocationRecord invocation) {
+        invocation.beginQuiescing();
+        task.destroy(emulator);
+        iterator.remove();
+        invocation.finishRequestedTermination();
+        invocation.markCarrierRetired();
+        synchronized (this) {
+            invocationByTask.remove(task);
+            invocationQueue.remove(invocation);
+            externalTaskQueue.remove(task);
         }
     }
 

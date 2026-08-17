@@ -32,6 +32,7 @@ public final class InvocationRecord {
     private volatile InvocationReferenceScope referenceScope;
     private volatile State state = State.RESERVED;
     private volatile InvocationResult terminal;
+    private volatile InvocationResult requestedTerminal;
     private boolean carrierRetired;
     private boolean outcomeAcknowledged;
 
@@ -86,6 +87,12 @@ public final class InvocationRecord {
         }
         scope.bindToCarrier();
         referenceScope = scope;
+        if (carrierRetired) {
+            scope.markCarrierRetired();
+        }
+        if (outcomeAcknowledged) {
+            scope.acknowledgeOutcome();
+        }
         return true;
     }
 
@@ -118,10 +125,22 @@ public final class InvocationRecord {
         return true;
     }
 
-    synchronized boolean requestCancellation(String detail) {
+    public boolean requestCancellation(String detail) {
+        return requestTermination(InvocationResult.cancelled(detail));
+    }
+
+    synchronized boolean requestTimeout(String detail) {
+        return requestTermination(InvocationResult.timeout(detail));
+    }
+
+    private synchronized boolean requestTermination(InvocationResult requested) {
         if (terminal != null || state == State.CANCELLED || state == State.TERMINAL) {
             return false;
         }
+        if (state == State.CANCEL_REQUESTED || state == State.QUIESCING) {
+            return false;
+        }
+        requestedTerminal = requested;
         state = State.CANCEL_REQUESTED;
         return true;
     }
@@ -145,17 +164,22 @@ public final class InvocationRecord {
         return true;
     }
 
-    synchronized boolean cancel(String detail) {
+    synchronized boolean finishRequestedTermination() {
         if (terminal != null || state == State.TERMINAL || state == State.CANCELLED) {
             return false;
         }
-        terminal = InvocationResult.cancelled(detail).withOwnership(ownership);
-        state = State.CANCELLED;
+        InvocationResult requested = requestedTerminal == null
+                ? InvocationResult.cancelled("invocation cancelled") : requestedTerminal;
+        terminal = requested.withOwnership(ownership);
+        state = requested.isCancelled() ? State.CANCELLED : State.TERMINAL;
         completion.complete(new InvocationOutcome(this, terminal));
         return true;
     }
 
     synchronized void markCarrierRetired() {
+        if (carrierRetired) {
+            return;
+        }
         carrierRetired = true;
         if (referenceScope != null) {
             referenceScope.markCarrierRetired();
@@ -163,6 +187,9 @@ public final class InvocationRecord {
     }
 
     synchronized void acknowledgeOutcome() {
+        if (outcomeAcknowledged) {
+            return;
+        }
         outcomeAcknowledged = true;
         if (referenceScope != null) {
             referenceScope.acknowledgeOutcome();
@@ -188,6 +215,11 @@ public final class InvocationRecord {
 
     public boolean isDone() {
         return completion.isDone();
+    }
+
+    boolean isTerminationRequested() {
+        State current = state;
+        return current == State.CANCEL_REQUESTED || current == State.QUIESCING;
     }
 
     private void requireState(State... allowed) {

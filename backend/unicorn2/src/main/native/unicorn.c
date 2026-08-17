@@ -335,7 +335,7 @@ JNIEXPORT void JNICALL Java_com_github_unidbg_arm_backend_unicorn_Unicorn_set_1e
   unicorn->emu_counter = 0;
 }
 
-JNIEXPORT jboolean JNICALL Java_com_github_unidbg_arm_backend_unicorn_Unicorn_consume_1emu_1count_1hook_triggered
+JNIEXPORT jboolean JNICALL Java_com_github_unidbg_arm_backend_unicorn_Unicorn_consume_1emu_1count_1hook_1triggered
   (JNIEnv *env, jclass cls, jlong handle) {
   t_unicorn unicorn = (t_unicorn) handle;
   jboolean triggered = unicorn->count_hook_triggered;

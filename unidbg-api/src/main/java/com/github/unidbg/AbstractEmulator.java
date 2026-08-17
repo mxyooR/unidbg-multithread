@@ -369,6 +369,7 @@ public abstract class AbstractEmulator<T extends NewFileIO> implements Emulator<
         long start = 0;
         Thread exitHook = null;
         boolean nativeTimesliceEnabled = false;
+        boolean stopReasonSupported = false;
         try {
             if (log.isDebugEnabled()) {
                 log.debug("emulate " + pointer + " started sp=" + getStackPointer());
@@ -385,10 +386,17 @@ public abstract class AbstractEmulator<T extends NewFileIO> implements Emulator<
                 });
                 Runtime.getRuntime().addShutdownHook(exitHook);
             }
+            stopReasonSupported = backend.supportsStopReason();
+            if (stopReasonSupported) {
+                backend.clearLastStopReason();
+            }
             nativeTimesliceEnabled = enableNativeTimesliceIfNeeded();
             backend.emu_start(begin, until, 0, 0);
-            BackendStopReason stopReason = nativeTimesliceEnabled
+            BackendStopReason stopReason = stopReasonSupported
                     ? backend.getLastStopReason() : BackendStopReason.NORMAL;
+            if (stopReason == BackendStopReason.NONE) {
+                stopReason = BackendStopReason.NORMAL;
+            }
             set(EMU_REASON_KEY, stopReason);
             if (stopReason == BackendStopReason.TIMESLICE) {
                 set(EMU_TIMESLICE_KEY, Boolean.TRUE);
@@ -396,8 +404,17 @@ public abstract class AbstractEmulator<T extends NewFileIO> implements Emulator<
                         ThreadContextSwitchException.Reason.TIMESLICE);
             }
             if (stopReason == BackendStopReason.EMU_STOP) {
-                throw new ThreadContextSwitchException().setReason(
-                        ThreadContextSwitchException.Reason.BACKEND_STOP);
+                if (threadDispatcher instanceof UniThreadDispatcher
+                        && ((UniThreadDispatcher) threadDispatcher).shouldYieldCurrentTask()) {
+                    throw new ThreadContextSwitchException().setReason(
+                            ThreadContextSwitchException.Reason.BACKEND_STOP);
+                }
+            }
+            if (stopReason == BackendStopReason.TIMEOUT) {
+                throw new BackendException("backend execution timed out");
+            }
+            if (stopReason == BackendStopReason.FAULT) {
+                throw new BackendException("backend execution stopped with a fault");
             }
             if (is64Bit()) {
                 return backend.reg_read(Arm64Const.UC_ARM64_REG_X0);
@@ -494,6 +511,9 @@ public abstract class AbstractEmulator<T extends NewFileIO> implements Emulator<
             RunnableTask runningTask = threadDispatcher.getRunningTask();
             log.warn("emulate {} exception sp={}, msg={}, offset={}ms{}", pointer, getStackPointer(), msg, System.currentTimeMillis() - start,
                     runningTask == null ? "" : (" @ " + runningTask));
+        }
+        if (threadDispatcher.getRunningInvocation() != null) {
+            throw e;
         }
         return -1;
     }

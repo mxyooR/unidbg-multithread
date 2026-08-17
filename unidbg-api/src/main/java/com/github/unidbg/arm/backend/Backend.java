@@ -78,6 +78,11 @@ public interface Backend {
     /** Clears the native stop metadata before a new scheduler-owned run. */
     void clearLastStopReason();
 
+    /** Whether this backend reports an exact reason for every emulation stop. */
+    default boolean supportsStopReason() {
+        return false;
+    }
+
     /** Whether this backend can stop at a guest-instruction budget. */
     boolean supportsNativeTimeslice();
 

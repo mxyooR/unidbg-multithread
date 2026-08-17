@@ -17,6 +17,9 @@ import com.github.unidbg.spi.ArmDisassembler;
 import com.github.unidbg.spi.Dlfcn;
 import com.github.unidbg.spi.LibraryFile;
 import com.github.unidbg.spi.SyscallHandler;
+import com.github.unidbg.thread.InvocationContext;
+import com.github.unidbg.thread.InvocationOutcome;
+import com.github.unidbg.thread.InvocationReferenceScope;
 import com.github.unidbg.thread.ThreadDispatcher;
 import com.github.unidbg.unwind.Unwinder;
 
@@ -63,6 +66,13 @@ public interface Emulator<T extends NewFileIO> extends Closeable, ArmDisassemble
     TraceHook traceCode(long begin, long end, TraceCodeListener listener);
 
     Number eFunc(long begin, Number... arguments);
+
+    /** Executes one native entry with exact invocation ownership. */
+    default InvocationOutcome eFuncForOutcome(long begin, InvocationContext context,
+                                              InvocationReferenceScope referenceScope,
+                                              Number... arguments) {
+        throw new UnsupportedOperationException("invocation outcomes are not supported");
+    }
 
     Number eEntry(long begin, long sp);
 

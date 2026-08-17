@@ -33,9 +33,29 @@ public interface ThreadDispatcher extends SignalOps {
         throw new UnsupportedOperationException("invocation outcomes are not supported");
     }
 
-    /** Returns the invocation currently admitted to the backend, if any. */
+    /** Runs a carrier with a caller-prepared invocation reference scope. */
+    default InvocationOutcome runThreadForOutcome(ThreadTask task,
+                                                   InvocationContext context,
+                                                   InvocationReferenceScope referenceScope) {
+        if (referenceScope != null) {
+            throw new UnsupportedOperationException("invocation reference scopes are not supported");
+        }
+        return runThreadForOutcome(task, context);
+    }
+
+    /** Requests cancellation; completion is published after carrier retirement. */
+    default boolean cancelInvocation(InvocationRecord invocation, String detail) {
+        return false;
+    }
+
+    /** Returns the invocation driven by the current backend-owner thread, if any. */
     default InvocationRecord getRunningInvocation() {
         return null;
+    }
+
+    /** True when a different host thread currently owns the backend loop. */
+    default boolean isBackendOwnedByAnotherThread() {
+        return false;
     }
 
     void runThreads(long timeout, TimeUnit unit);

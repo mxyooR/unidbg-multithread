@@ -75,7 +75,7 @@ public class DalvikVM extends BaseVM implements VM {
                 }
 
                 if (notFound) {
-                    throwable = resolveClass("java/lang/NoClassDefFoundError").newObject(name);
+                    setPendingException(resolveClass("java/lang/NoClassDefFoundError").newObject(name));
                     return 0;
                 }
 
@@ -181,7 +181,7 @@ public class DalvikVM extends BaseVM implements VM {
                 UnidbgPointer object = context.getPointerArg(1);
                 DvmObject<?> dvmObject = getObject(object.toIntPeer());
                 log.warn("Throw dvmObject=" + dvmObject + ", class=" + (dvmObject != null ? dvmObject.getObjectType() : null));
-                throwable = dvmObject;
+                setPendingException(dvmObject);
                 return 0;
             }
         });
@@ -196,7 +196,8 @@ public class DalvikVM extends BaseVM implements VM {
         Pointer _ExceptionOccurred = svcMemory.registerSvc(new ArmSvc() {
             @Override
             public long handle(Emulator<?> emulator) {
-                long exception = throwable == null ? JNI_NULL : (throwable.hashCode() & 0xffffffffL);
+                DvmObject<?> pending = getPendingException();
+                long exception = pending == null ? JNI_NULL : (pending.hashCode() & 0xffffffffL);
                 if (log.isDebugEnabled()) {
                     log.debug("ExceptionOccurred: 0x" + Long.toHexString(exception));
                 }
@@ -217,7 +218,7 @@ public class DalvikVM extends BaseVM implements VM {
                 if (log.isDebugEnabled()) {
                     log.debug("ExceptionClear");
                 }
-                throwable = null;
+                clearPendingException();
                 return 0;
             }
         });
@@ -237,6 +238,10 @@ public class DalvikVM extends BaseVM implements VM {
                 if (log.isDebugEnabled()) {
                     log.debug("PushLocalFrame capacity=" + capacity);
                 }
+                InvocationLocalReferenceScope scope = currentInvocationReferenceScope();
+                if (scope != null) {
+                    scope.pushLocalFrame();
+                }
                 return JNI_OK;
             }
         });
@@ -249,7 +254,10 @@ public class DalvikVM extends BaseVM implements VM {
                 if (log.isDebugEnabled()) {
                     log.debug("PopLocalFrame jresult=" + jresult);
                 }
-                return jresult == null ? 0 : jresult.toIntPeer();
+                InvocationLocalReferenceScope scope = currentInvocationReferenceScope();
+                return scope == null
+                        ? (jresult == null ? 0 : jresult.toIntPeer())
+                        : scope.popLocalFrame(jresult == null ? 0 : jresult.toIntPeer());
             }
         });
 
@@ -302,6 +310,10 @@ public class DalvikVM extends BaseVM implements VM {
                 UnidbgPointer object = context.getPointerArg(1);
                 if (log.isDebugEnabled()) {
                     log.debug("DeleteLocalRef object=" + object);
+                }
+                InvocationLocalReferenceScope scope = currentInvocationReferenceScope();
+                if (scope != null && object != null) {
+                    scope.deleteLocalRef(object.toIntPeer());
                 }
                 return 0;
             }
@@ -3478,9 +3490,9 @@ public class DalvikVM extends BaseVM implements VM {
             @Override
             public long handle(Emulator<?> emulator) {
                 if (log.isDebugEnabled()) {
-                    log.debug("ExceptionCheck throwable=" + throwable);
+                    log.debug("ExceptionCheck throwable=" + getPendingException());
                 }
-                return throwable == null ? JNI_FALSE : JNI_TRUE;
+                return getPendingException() == null ? JNI_FALSE : JNI_TRUE;
             }
         });
 

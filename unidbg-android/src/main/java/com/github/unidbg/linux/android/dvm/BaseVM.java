@@ -65,7 +65,30 @@ public abstract class BaseVM implements VM, DvmClassFactory {
 
     @Override
     public void throwException(DvmObject<?> throwable) {
-        this.throwable = throwable;
+        setPendingException(throwable);
+    }
+
+    final void setPendingException(DvmObject<?> exception) {
+        InvocationLocalReferenceScope scope = currentInvocationReferenceScope();
+        if (scope == null) {
+            throwable = exception;
+        } else {
+            scope.setPendingException(exception);
+        }
+    }
+
+    final DvmObject<?> getPendingException() {
+        InvocationLocalReferenceScope scope = currentInvocationReferenceScope();
+        return scope == null ? throwable : scope.getPendingException();
+    }
+
+    final void clearPendingException() {
+        InvocationLocalReferenceScope scope = currentInvocationReferenceScope();
+        if (scope == null) {
+            throwable = null;
+        } else {
+            scope.clearPendingException();
+        }
     }
 
     @Override
@@ -188,7 +211,7 @@ public abstract class BaseVM implements VM, DvmClassFactory {
         return addObject(object, false, false);
     }
 
-    private InvocationLocalReferenceScope currentInvocationReferenceScope() {
+    final InvocationLocalReferenceScope currentInvocationReferenceScope() {
         InvocationRecord invocation = emulator.getThreadDispatcher().getRunningInvocation();
         if (invocation == null) {
             return null;
@@ -211,6 +234,19 @@ public abstract class BaseVM implements VM, DvmClassFactory {
             throw new IllegalStateException("unable to install invocation reference scope");
         }
         return (InvocationLocalReferenceScope) existing;
+    }
+
+    final InvocationReferenceScope createInvocationReferenceScope() {
+        return new InvocationLocalReferenceScope(this);
+    }
+
+    final int addInvocationLocalObject(InvocationReferenceScope scope,
+                                       DvmObject<?> object) {
+        if (!(scope instanceof InvocationLocalReferenceScope)
+                || !((InvocationLocalReferenceScope) scope).belongsTo(this)) {
+            throw new IllegalArgumentException("scope does not belong to this VM");
+        }
+        return ((InvocationLocalReferenceScope) scope).addLocalObject(object);
     }
 
     final int addObjectToInvocationScope(DvmObject<?> object,
@@ -255,6 +291,15 @@ public abstract class BaseVM implements VM, DvmClassFactory {
         if (ref == null) {
             ref = globalObjectMap.get(hash);
         }
+        if (ref == null) {
+            ref = weakGlobalObjectMap.get(hash);
+        }
+        return ref == null ? null : (T) ref.obj;
+    }
+
+    @SuppressWarnings("unchecked")
+    final <T extends DvmObject<?>> T getGlobalOrWeakObject(int hash) {
+        ObjRef ref = globalObjectMap.get(hash);
         if (ref == null) {
             ref = weakGlobalObjectMap.get(hash);
         }

@@ -21,6 +21,9 @@ import com.github.unidbg.spi.Dlfcn;
 import com.github.unidbg.spi.SyscallHandler;
 import com.github.unidbg.thread.Entry;
 import com.github.unidbg.thread.Function64;
+import com.github.unidbg.thread.InvocationContext;
+import com.github.unidbg.thread.InvocationOutcome;
+import com.github.unidbg.thread.InvocationReferenceScope;
 import com.github.unidbg.thread.NativeWorkerTask64;
 import com.github.unidbg.thread.UniThreadDispatcher;
 import com.github.unidbg.unix.UnixSyscallHandler;
@@ -267,6 +270,15 @@ public abstract class AbstractARM64Emulator<T extends NewFileIO> extends Abstrac
                     isPaddingArgument(), arguments));
         }
         return runMainForResult(new Function64(getPid(), begin, LR, isPaddingArgument(), arguments));
+    }
+
+    @Override
+    public InvocationOutcome eFuncForOutcome(long begin, InvocationContext context,
+                                             InvocationReferenceScope referenceScope,
+                                             Number... arguments) {
+        NativeWorkerTask64 task = new NativeWorkerTask64(getPid(), begin, LR,
+                isPaddingArgument(), arguments);
+        return getThreadDispatcher().runThreadForOutcome(task, context, referenceScope);
     }
 
     @Override

@@ -21,6 +21,9 @@ import com.github.unidbg.spi.Dlfcn;
 import com.github.unidbg.spi.SyscallHandler;
 import com.github.unidbg.thread.Entry;
 import com.github.unidbg.thread.Function32;
+import com.github.unidbg.thread.InvocationContext;
+import com.github.unidbg.thread.InvocationOutcome;
+import com.github.unidbg.thread.InvocationReferenceScope;
 import com.github.unidbg.thread.NativeWorkerTask32;
 import com.github.unidbg.thread.UniThreadDispatcher;
 import com.github.unidbg.unix.UnixSyscallHandler;
@@ -260,6 +263,15 @@ public abstract class AbstractARMEmulator<T extends NewFileIO> extends AbstractE
                     isPaddingArgument(), arguments));
         }
         return runMainForResult(new Function32(getPid(), begin, LR, isPaddingArgument(), arguments));
+    }
+
+    @Override
+    public InvocationOutcome eFuncForOutcome(long begin, InvocationContext context,
+                                             InvocationReferenceScope referenceScope,
+                                             Number... arguments) {
+        NativeWorkerTask32 task = new NativeWorkerTask32(getPid(), begin, LR,
+                isPaddingArgument(), arguments);
+        return getThreadDispatcher().runThreadForOutcome(task, context, referenceScope);
     }
 
     @Override

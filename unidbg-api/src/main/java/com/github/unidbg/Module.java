@@ -6,6 +6,9 @@ import com.github.unidbg.memory.SvcMemory;
 import com.github.unidbg.pointer.UnidbgPointer;
 import com.github.unidbg.spi.InitFunctionListener;
 import com.github.unidbg.spi.LibraryFile;
+import com.github.unidbg.thread.InvocationContext;
+import com.github.unidbg.thread.InvocationOutcome;
+import com.github.unidbg.thread.InvocationReferenceScope;
 
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
@@ -143,6 +146,20 @@ public abstract class Module {
     }
 
     public static Number emulateFunction(Emulator<?> emulator, long address, Object... args) {
+        List<Number> list = prepareFunctionArguments(args);
+        return emulator.eFunc(address, list.toArray(new Number[0]));
+    }
+
+    /** Executes a function through the invocation-owned dispatcher path. */
+    public static InvocationOutcome emulateFunctionForOutcome(
+            Emulator<?> emulator, long address, InvocationContext context,
+            InvocationReferenceScope referenceScope, Object... args) {
+        List<Number> list = prepareFunctionArguments(args);
+        return emulator.eFuncForOutcome(address, context, referenceScope,
+                list.toArray(new Number[0]));
+    }
+
+    private static List<Number> prepareFunctionArguments(Object... args) {
         List<Number> list = new ArrayList<>(args.length);
         for (Object arg : args) {
             if (arg instanceof String) {
@@ -160,7 +177,7 @@ public abstract class Module {
                 throw new IllegalStateException("Unsupported arg: " + arg);
             }
         }
-        return emulator.eFunc(address, list.toArray(new Number[0]));
+        return list;
     }
 
     public boolean isVirtual() {

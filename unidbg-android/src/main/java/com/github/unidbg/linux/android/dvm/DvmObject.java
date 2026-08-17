@@ -5,6 +5,9 @@ import com.github.unidbg.Module;
 import com.github.unidbg.linux.android.dvm.jni.ProxyDvmObject;
 import com.github.unidbg.memory.MemoryBlock;
 import com.github.unidbg.pointer.UnidbgPointer;
+import com.github.unidbg.thread.InvocationContext;
+import com.github.unidbg.thread.InvocationOutcome;
+import com.github.unidbg.thread.InvocationReferenceScope;
 import com.sun.jna.Pointer;
 
 import java.util.ArrayList;
@@ -48,10 +51,9 @@ public class DvmObject<T> extends Hashable {
         if (objectType == null) {
             throw new IllegalStateException("objectType is null");
         }
-        try {
-            callJniMethod(emulator, vm, objectType, this, method, args);
-        } finally {
-            vm.deleteLocalRefs();
+        try (JniCallResult result = callJniMethodResult(
+                emulator, vm, objectType, this, null, false, method, args)) {
+            result.getValue();
         }
     }
 
@@ -65,10 +67,9 @@ public class DvmObject<T> extends Hashable {
         if (objectType == null) {
             throw new IllegalStateException("objectType is null");
         }
-        try {
-            return callJniMethod(emulator, vm, objectType, this, method, args).intValue();
-        } finally {
-            vm.deleteLocalRefs();
+        try (JniCallResult result = callJniMethodResult(
+                emulator, vm, objectType, this, null, false, method, args)) {
+            return result.getValue().intValue();
         }
     }
 
@@ -77,10 +78,9 @@ public class DvmObject<T> extends Hashable {
         if (objectType == null) {
             throw new IllegalStateException("objectType is null");
         }
-        try {
-            return callJniMethod(emulator, vm, objectType, this, method, args).longValue();
-        } finally {
-            vm.deleteLocalRefs();
+        try (JniCallResult result = callJniMethodResult(
+                emulator, vm, objectType, this, null, false, method, args)) {
+            return result.getValue().longValue();
         }
     }
 
@@ -89,17 +89,85 @@ public class DvmObject<T> extends Hashable {
         if (objectType == null) {
             throw new IllegalStateException("objectType is null");
         }
-        try {
-            Number number = callJniMethod(emulator, vm, objectType, this, method, args);
-            return objectType.vm.getObject(number.intValue());
-        } finally {
-            vm.deleteLocalRefs();
+        try (JniCallResult result = callJniMethodResult(
+                emulator, vm, objectType, this, null, false, method, args)) {
+            return result.resolveObject(objectType.vm);
         }
     }
 
-    protected static Number callJniMethod(Emulator<?> emulator, VM vm, DvmClass objectType, DvmObject<?> thisObj, String method, Object...args) {
+    /** Runs a JNI method and returns its number with exact invocation evidence. */
+    public JniInvocationOutcome<Number> callJniMethodOutcome(
+            InvocationContext context, Emulator<?> emulator, String method, Object... args) {
+        if (objectType == null) {
+            throw new IllegalStateException("objectType is null");
+        }
+        try (JniCallResult result = callJniMethodResult(
+                emulator, vm, objectType, this, context, true, method, args)) {
+            Number value = result.getValue();
+            return new JniInvocationOutcome<>(value, result.getInvocationOutcome());
+        }
+    }
+
+    /** Resolves a JNI local object before acknowledging its exact invocation. */
+    public <V extends DvmObject<?>> JniInvocationOutcome<V> callJniMethodObjectOutcome(
+            InvocationContext context, Emulator<?> emulator, String method, Object... args) {
+        if (objectType == null) {
+            throw new IllegalStateException("objectType is null");
+        }
+        try (JniCallResult result = callJniMethodResult(
+                emulator, vm, objectType, this, context, true, method, args)) {
+            V value = result.resolveObject(objectType.vm);
+            return new JniInvocationOutcome<>(value, result.getInvocationOutcome());
+        }
+    }
+
+    protected static Number callJniMethod(Emulator<?> emulator, VM vm, DvmClass objectType,
+                                          DvmObject<?> thisObj, String method, Object... args) {
+        try (JniCallResult result = callJniMethodResult(
+                emulator, vm, objectType, thisObj, null, false, method, args)) {
+            return result.getValue();
+        }
+    }
+
+    protected static JniCallResult callJniMethodResult(
+            Emulator<?> emulator, VM vm, DvmClass objectType, DvmObject<?> thisObj,
+            InvocationContext context, boolean forceInvocation,
+            String method, Object... args) {
+        boolean invocationOwned = forceInvocation
+                || emulator.getThreadDispatcher().isBackendOwnedByAnotherThread();
+        if (!invocationOwned) {
+            JniCall call = prepareJniCall(emulator, vm, objectType, thisObj, null, method, args);
+            Number value = Module.emulateFunction(emulator, call.function.peer,
+                    call.arguments.toArray());
+            return new JniCallResult((BaseVM) vm, value, null, null);
+        }
+        if (!(vm instanceof BaseVM)) {
+            throw new IllegalStateException("invocation-owned JNI calls require BaseVM");
+        }
+        InvocationContext actualContext = context == null
+                ? InvocationContext.builder().operation(method).origin("dvm-jni").build()
+                : context;
+        BaseVM baseVm = (BaseVM) vm;
+        InvocationReferenceScope referenceScope = baseVm.createInvocationReferenceScope();
+        try {
+            JniCall call = prepareJniCall(emulator, vm, objectType, thisObj,
+                    referenceScope, method, args);
+            InvocationOutcome outcome = Module.emulateFunctionForOutcome(
+                    emulator, call.function.peer, actualContext, referenceScope,
+                    call.arguments.toArray());
+            return new JniCallResult(baseVm, outcome.getValue(), outcome, referenceScope);
+        } catch (RuntimeException | Error e) {
+            referenceScope.acknowledgeOutcome();
+            referenceScope.discardUnbound();
+            throw e;
+        }
+    }
+
+    private static JniCall prepareJniCall(
+            Emulator<?> emulator, VM vm, DvmClass objectType, DvmObject<?> thisObj,
+            InvocationReferenceScope referenceScope, String method, Object... args) {
         UnidbgPointer fnPtr = objectType.findNativeFunction(emulator, method);
-        vm.addLocalObject(thisObj);
+        addPreparedLocalObject(vm, referenceScope, thisObj);
         List<Object> list = new ArrayList<>(10);
         list.add(vm.getJNIEnv());
         list.add(thisObj.hashCode());
@@ -112,7 +180,7 @@ public class DvmObject<T> extends Hashable {
                     list.add(arg.hashCode()); // dvm object
 
                     if(arg instanceof DvmObject) {
-                        vm.addLocalObject((DvmObject<?>) arg);
+                        addPreparedLocalObject(vm, referenceScope, (DvmObject<?>) arg);
                     }
                     continue;
                 } else if (arg instanceof DvmAwareObject ||
@@ -125,14 +193,97 @@ public class DvmObject<T> extends Hashable {
                         arg instanceof Enum) {
                     DvmObject<?> obj = ProxyDvmObject.createObject(vm, arg);
                     list.add(obj.hashCode());
-                    vm.addLocalObject(obj);
+                    addPreparedLocalObject(vm, referenceScope, obj);
                     continue;
                 }
 
                 list.add(arg);
             }
         }
-        return Module.emulateFunction(emulator, fnPtr.peer, list.toArray());
+        return new JniCall(fnPtr, list);
+    }
+
+    private static void addPreparedLocalObject(VM vm, InvocationReferenceScope referenceScope,
+                                               DvmObject<?> object) {
+        if (referenceScope == null) {
+            vm.addLocalObject(object);
+        } else {
+            ((BaseVM) vm).addInvocationLocalObject(referenceScope, object);
+        }
+    }
+
+    private static final class JniCall {
+        private final UnidbgPointer function;
+        private final List<Object> arguments;
+
+        private JniCall(UnidbgPointer function, List<Object> arguments) {
+            this.function = function;
+            this.arguments = arguments;
+        }
+    }
+
+    protected static final class JniCallResult implements AutoCloseable {
+        private final BaseVM vm;
+        private final Number value;
+        private final InvocationOutcome outcome;
+        private final InvocationReferenceScope referenceScope;
+        private boolean closed;
+
+        private JniCallResult(BaseVM vm, Number value, InvocationOutcome outcome,
+                              InvocationReferenceScope referenceScope) {
+            this.vm = vm;
+            this.value = value;
+            this.outcome = outcome;
+            this.referenceScope = referenceScope;
+        }
+
+        Number getValue() {
+            requireCompleted();
+            return value;
+        }
+
+        InvocationOutcome getInvocationOutcome() {
+            if (outcome == null) {
+                throw new IllegalStateException("JNI call has no invocation outcome");
+            }
+            requireCompleted();
+            return outcome;
+        }
+
+        @SuppressWarnings("unchecked")
+        <V extends DvmObject<?>> V resolveObject(BaseVM targetVm) {
+            Number result = getValue();
+            if (result == null) {
+                return null;
+            }
+            return referenceScope == null
+                    ? targetVm.getObject(result.intValue())
+                    : (V) targetVm.getInvocationObject(referenceScope, result.intValue());
+        }
+
+        private void requireCompleted() {
+            if (outcome == null || outcome.getResult().isCompleted()) {
+                return;
+            }
+            String detail = outcome.getResult().getDetail();
+            if (detail == null) {
+                detail = "JNI invocation ended with " + outcome.getResult().getState();
+            }
+            throw new IllegalStateException(detail, outcome.getResult().getFault());
+        }
+
+        @Override
+        public void close() {
+            if (closed) {
+                return;
+            }
+            closed = true;
+            if (outcome != null) {
+                outcome.acknowledgeOutcome();
+            } else {
+                vm.deleteLocalRefs();
+            }
+        }
     }
 
     @Override

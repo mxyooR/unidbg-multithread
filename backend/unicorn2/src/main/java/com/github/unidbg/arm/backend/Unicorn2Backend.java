@@ -479,6 +479,11 @@ class Unicorn2Backend extends AbstractBackend implements Backend {
     }
 
     @Override
+    public boolean supportsStopReason() {
+        return true;
+    }
+
+    @Override
     public boolean supportsNativeTimeslice() {
         return true;
     }

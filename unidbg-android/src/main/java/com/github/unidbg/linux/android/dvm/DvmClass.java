@@ -4,6 +4,7 @@ import com.github.unidbg.Emulator;
 import com.github.unidbg.Module;
 import com.github.unidbg.Symbol;
 import com.github.unidbg.pointer.UnidbgPointer;
+import com.github.unidbg.thread.InvocationContext;
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
 
@@ -280,10 +281,9 @@ public class DvmClass extends DvmObject<Class<?>> {
     }
     
     public void callStaticJniMethod(Emulator<?> emulator, String method, Object...args) {
-        try {
-            callJniMethod(emulator, vm, this, this, method, args);
-        } finally {
-            vm.deleteLocalRefs();
+        try (JniCallResult result = callJniMethodResult(
+                emulator, vm, this, this, null, false, method, args)) {
+            result.getValue();
         }
     }
 
@@ -294,29 +294,45 @@ public class DvmClass extends DvmObject<Class<?>> {
 
     @SuppressWarnings("unused")
     public int callStaticJniMethodInt(Emulator<?> emulator, String method, Object...args) {
-        try {
-            return callJniMethod(emulator, vm, this, this, method, args).intValue();
-        } finally {
-            vm.deleteLocalRefs();
+        try (JniCallResult result = callJniMethodResult(
+                emulator, vm, this, this, null, false, method, args)) {
+            return result.getValue().intValue();
         }
     }
 
     @SuppressWarnings("unused")
     public long callStaticJniMethodLong(Emulator<?> emulator, String method, Object...args) {
-        try {
-            return callJniMethod(emulator, vm, this, this, method, args).longValue();
-        } finally {
-            vm.deleteLocalRefs();
+        try (JniCallResult result = callJniMethodResult(
+                emulator, vm, this, this, null, false, method, args)) {
+            return result.getValue().longValue();
         }
     }
 
     @SuppressWarnings("unused")
     public <T extends DvmObject<?>> T callStaticJniMethodObject(Emulator<?> emulator, String method, Object...args) {
-        try {
-            Number number = callJniMethod(emulator, vm, this, this, method, args);
-            return vm.getObject(number.intValue());
-        } finally {
-            vm.deleteLocalRefs();
+        try (JniCallResult result = callJniMethodResult(
+                emulator, vm, this, this, null, false, method, args)) {
+            return result.resolveObject(vm);
+        }
+    }
+
+    /** Runs a static JNI method and returns exact invocation evidence. */
+    public JniInvocationOutcome<Number> callStaticJniMethodOutcome(
+            InvocationContext context, Emulator<?> emulator, String method, Object... args) {
+        try (JniCallResult result = callJniMethodResult(
+                emulator, vm, this, this, context, true, method, args)) {
+            Number value = result.getValue();
+            return new JniInvocationOutcome<>(value, result.getInvocationOutcome());
+        }
+    }
+
+    /** Resolves a static JNI object result before acknowledging the invocation. */
+    public <T extends DvmObject<?>> JniInvocationOutcome<T> callStaticJniMethodObjectOutcome(
+            InvocationContext context, Emulator<?> emulator, String method, Object... args) {
+        try (JniCallResult result = callJniMethodResult(
+                emulator, vm, this, this, context, true, method, args)) {
+            T value = result.resolveObject(vm);
+            return new JniInvocationOutcome<>(value, result.getInvocationOutcome());
         }
     }
 
