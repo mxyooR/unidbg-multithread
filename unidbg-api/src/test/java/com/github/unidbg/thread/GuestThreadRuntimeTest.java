@@ -8,6 +8,7 @@ import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertSame;
 import static org.junit.Assert.assertTrue;
+import static org.junit.Assert.fail;
 
 /** Contract tests for generic guest-thread identity and carrier evidence. */
 public class GuestThreadRuntimeTest {
@@ -78,6 +79,33 @@ public class GuestThreadRuntimeTest {
         GuestThreadIncarnation reused = run.registerGuestThread(77, "reused");
         assertEquals(77, reused.getGuestTid());
         assertTrue(reused.getIncarnationId() != first.getIncarnationId());
+    }
+
+    @Test
+    public void synchronousChildrenCompleteInStrictLifoOrder() {
+        RunContext run = new RunContext();
+        GuestThreadIncarnation thread = run.registerGuestThread(78, "lifo-test");
+        InvocationContinuation parent = new InvocationContinuation(
+                1L, 1L, thread, 1L, 1, 1L);
+        InvocationContinuation child = InvocationContinuation.synchronousChild(
+                2L, 2L, parent, 2L);
+        InvocationStack stack = thread.getInvocationStack();
+        stack.push(parent);
+        stack.pushSynchronousChild(parent, child);
+
+        assertEquals(2, stack.depth());
+        assertEquals(ReentryMode.SAME_THREAD_SYNCHRONOUS, child.getReentryMode());
+        assertEquals(parent.getContinuationId(), child.getParentContinuationId());
+        try {
+            stack.completeSynchronousChild(parent);
+            fail("non-LIFO parent completion was accepted");
+        } catch (IllegalStateException expected) {
+            assertEquals(2, stack.depth());
+        }
+
+        assertSame(parent, stack.completeSynchronousChild(child));
+        assertTrue(stack.pop(parent));
+        assertEquals(0, stack.depth());
     }
 
     private static final class NoopTask extends ThreadTask {

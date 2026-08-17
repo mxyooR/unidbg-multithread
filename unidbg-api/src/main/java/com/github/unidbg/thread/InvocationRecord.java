@@ -259,12 +259,14 @@ public final class InvocationRecord {
         if (carrierRetired) {
             return;
         }
+        if (continuation != null && guestThread != null) {
+            if (!guestThread.getInvocationStack().pop(continuation)) {
+                throw new IllegalStateException("continuation retirement is not LIFO");
+            }
+        }
         carrierRetired = true;
         if (referenceScope != null) {
             referenceScope.markCarrierRetired();
-        }
-        if (continuation != null && guestThread != null) {
-            guestThread.getInvocationStack().pop(continuation);
         }
     }
 

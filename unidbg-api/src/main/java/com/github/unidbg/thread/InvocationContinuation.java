@@ -14,10 +14,25 @@ public final class InvocationContinuation {
     private final long bindingEpoch;
     private final int stackDepth;
     private final long contextEpoch;
+    private final ReentryMode reentryMode;
+    private final long parentContinuationId;
 
     InvocationContinuation(long invocationId, long generation,
                            GuestThreadIncarnation guestThread,
                            long bindingEpoch, int stackDepth, long contextEpoch) {
+        this(invocationId, generation, guestThread, bindingEpoch, stackDepth,
+                contextEpoch, ReentryMode.FRESH_ASYNC, 0L);
+    }
+
+    private InvocationContinuation(long invocationId, long generation,
+                                   GuestThreadIncarnation guestThread,
+                                   long bindingEpoch, int stackDepth, long contextEpoch,
+                                   ReentryMode reentryMode, long parentContinuationId) {
+        if (invocationId <= 0L || generation <= 0L || guestThread == null
+                || bindingEpoch <= 0L || stackDepth <= 0 || contextEpoch <= 0L
+                || reentryMode == null || parentContinuationId < 0L) {
+            throw new IllegalArgumentException("invalid continuation identity");
+        }
         this.continuationId = NEXT_ID.incrementAndGet();
         this.invocationId = invocationId;
         this.generation = generation;
@@ -25,6 +40,21 @@ public final class InvocationContinuation {
         this.bindingEpoch = bindingEpoch;
         this.stackDepth = stackDepth;
         this.contextEpoch = contextEpoch;
+        this.reentryMode = reentryMode;
+        this.parentContinuationId = parentContinuationId;
+    }
+
+    static InvocationContinuation synchronousChild(long invocationId, long generation,
+                                                    InvocationContinuation parent,
+                                                    long contextEpoch) {
+        if (parent == null) {
+            throw new NullPointerException("parent");
+        }
+        int childDepth = parent.stackDepth == Integer.MAX_VALUE
+                ? Integer.MAX_VALUE : parent.stackDepth + 1;
+        return new InvocationContinuation(invocationId, generation, parent.guestThread,
+                parent.bindingEpoch, childDepth, contextEpoch,
+                ReentryMode.SAME_THREAD_SYNCHRONOUS, parent.continuationId);
     }
 
     public long getContinuationId() {
@@ -53,5 +83,13 @@ public final class InvocationContinuation {
 
     public long getContextEpoch() {
         return contextEpoch;
+    }
+
+    public ReentryMode getReentryMode() {
+        return reentryMode;
+    }
+
+    public long getParentContinuationId() {
+        return parentContinuationId;
     }
 }
