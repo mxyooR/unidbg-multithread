@@ -42,12 +42,15 @@ public class HexTest extends TestCase {
 
     public void testStream() throws Exception {
         File testFile = new File("target/streamTest.txt");
+        String newline = System.lineSeparator();
         new PrintStream(testFile).println(123);
         new PrintStream(testFile).println("abc");
-        assertEquals("abc\n", FileUtils.readFileToString(testFile, StandardCharsets.UTF_8));
+        assertEquals("abc" + newline,
+                FileUtils.readFileToString(testFile, StandardCharsets.UTF_8));
 
         new PrintStream(new FileOutputStream(testFile, true), false).println(123);
-        assertEquals("abc\n123\n", FileUtils.readFileToString(testFile, StandardCharsets.UTF_8));
+        assertEquals("abc" + newline + "123" + newline,
+                FileUtils.readFileToString(testFile, StandardCharsets.UTF_8));
     }
 
     public void testFormat() {
