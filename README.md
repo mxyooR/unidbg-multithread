@@ -1,106 +1,139 @@
 # unidbg-multithreading
 
-Allows you to emulate an Android native library, and an experimental iOS emulation.<br>
+Experimental `unidbg v0.9.8` fork for a generic **Guest Thread Runtime** and
+single-backend multithreading.
 
-This project is an experimental `v0.9.8` fork of unidbg for generic,
-single-backend multithreading. It is migrating from invocation ownership to a
-Guest Thread Runtime without embedding application-specific SO names, command
-IDs, routers, or assets.
+> **Status: under development.**
+>
+> Multiple Java host threads can submit guest work while one emulator backend
+> remains the source of truth. Guest work is interleaved at explicit stop and
+> yield points; this is not simultaneous execution on multiple CPU cores.
 
-## Development status
+This fork is intended to provide reusable runtime infrastructure. It does not
+contain SO-specific names, command IDs, application routers, readiness rules,
+or other business workflow.
 
-The Guest Thread Runtime is under active development. The current branch has a
-generic four-layer identity model (`RunContext`, `GuestThreadIncarnation`,
-`InvocationRecord`, and `CarrierLease`), serialized backend ownership, foreign
-host-thread submission, exact invocation terminals, typed wait dependencies,
-and admission/retirement evidence. Guest errno, `JNIEnv` attachment, and
-pending exceptions follow guest-thread identity; JNI local references remain
-invocation-scoped.
+## What is implemented
 
-Strict LIFO parent/child continuation contracts are present, but synchronous
-guest re-entry on the backend-owner thread is not connected to nested backend
-execution yet and is rejected. Physical worker stacks are still task-owned.
-The APIs and lifecycle contracts may change as that migration continues.
+- Dispatcher-owned, serialized backend admission and retirement.
+- Foreign host-thread submission with an invocation-owned completion result.
+- Guest-thread identity independent of the Java host thread that happens to
+  drive the backend.
+- Per-guest-thread `errno`, `JNIEnv` attachment, pending exception, and
+  attachment state.
+- Invocation-scoped JNI local-reference lifetime.
+- Typed wait dependencies with atomic batch publication and cycle detection.
+- Root-fault quarantine, transitive dependent snapshots, and terminal evidence
+  for diagnostics.
+- Strict LIFO continuation validation with explicit re-entry modes.
+- Unicorn2 stop-reason and guest-PC evidence for native instruction budgets and
+  cross-thread stop requests.
 
-This is not simultaneous execution of one Unicorn engine on multiple CPU cores.
-Guest calls take turns on one backend at explicit yield and stop points.
+The runtime is exercised with generic ARM32/ARM64 instructions and anonymous
+tasks. The tests do not require a target library or application protocol.
 
-This is an educational project to learn more about the ELF/MachO file format and ARM assembly.<br>
+## Current limitations
 
-Use it at your own risk !
+This project does not yet claim production-complete guest threading:
 
-## License
-- unidbg uses software libraries from [Apache Software Foundation](http://apache.org). 
+- One backend is still serialized. There is no true parallel guest execution
+  or multi-core memory-consistency model.
+- Synchronous guest re-entry from the current dispatcher owner is validated as
+  a contract but is currently rejected; nested backend execution is not wired
+  through a real callback return boundary yet.
+- CPU register contexts and physical worker stacks remain task-owned. Persistent
+  guest-thread stack regions are part of the ongoing migration.
+- Full pthread/TCB/TLS, signal, futex-owner, and thread-exit semantics are not
+  represented by the guest-thread object yet.
+- Cancellation and timeout are cooperative and depend on a supported stop
+  point. Backend parity has been verified most directly with Unicorn2.
+- Backend hooks, VM globals, loader state, memory, and file descriptors remain
+  shared run resources.
+- APIs and lifecycle contracts may change while the runtime is under
+  development.
 
-Simple tests under src/test directory
-- [unidbg-android/src/test/java/com/bytedance/frameworks/core/encrypt/TTEncrypt.java](https://github.com/zhkl0228/unidbg/blob/master/unidbg-android/src/test/java/com/bytedance/frameworks/core/encrypt/TTEncrypt.java)  
+## Runtime model
 
-![](assets/TTEncrypt.gif)
-***
-- [unidbg-android/src/test/java/com/sun/jna/JniDispatch32.java](https://github.com/zhkl0228/unidbg/blob/master/unidbg-android/src/test/java/com/sun/jna/JniDispatch32.java)  
-![](assets/JniDispatch32.gif)
-***
-- [unidbg-android/src/test/java/com/sun/jna/JniDispatch64.java](https://github.com/zhkl0228/unidbg/blob/master/unidbg-android/src/test/java/com/sun/jna/JniDispatch64.java)  
-![](assets/JniDispatch64.gif)
-***
-- [unidbg-android/src/test/java/org/telegram/messenger/Utilities32.java](https://github.com/zhkl0228/unidbg/blob/master/unidbg-android/src/test/java/org/telegram/messenger/Utilities32.java)  
-![](assets/Utilities32.gif)
-***
-- [unidbg-android/src/test/java/org/telegram/messenger/Utilities64.java](https://github.com/zhkl0228/unidbg/blob/master/unidbg-android/src/test/java/org/telegram/messenger/Utilities64.java)  
-![](assets/Utilities64.gif)
+The implementation separates four identities:
 
-## More tests
-- [unidbg-android/src/test/java/com/github/unidbg/android/QDReaderJni.java](https://github.com/zhkl0228/unidbg/blob/master/unidbg-android/src/test/java/com/github/unidbg/android/QDReaderJni.java)
-- [unidbg-android/src/test/java/com/anjuke/mobile/sign/SignUtil.java](https://github.com/zhkl0228/unidbg/blob/master/unidbg-android/src/test/java/com/anjuke/mobile/sign/SignUtil.java)
+| Layer | Responsibility |
+| --- | --- |
+| `RunContext` | Run identity, guest-thread registry, invocation records, wait graph, fault state, and terminal evidence |
+| `GuestThreadIncarnation` | Stable guest-thread incarnation, guest TID, errno, `JNIEnv`, pending exception, and continuation stack |
+| `InvocationRecord` | One call's context, completion, JNI local-reference scope, and terminal state |
+| `CarrierLease` | Temporary proof that one invocation may drive the backend |
 
-## Features
-- Emulation of the JNI Invocation API so JNI_OnLoad can be called.
-- Support JavaVM, JNIEnv.
-- Emulation of syscalls instruction.
-- Support ARM32 and ARM64.
-- Inline hook, thanks to [Dobby](https://github.com/jmpews/Dobby).
-- Android import hook, thanks to [xHook](https://github.com/iqiyi/xHook).
-- iOS [fishhook](https://github.com/facebook/fishhook) and substrate and [whale](https://github.com/asLody/whale) hook.
-- [unicorn](https://github.com/zhkl0228/unicorn) backend support simple console debugger, gdb stub, instruction trace, memory read/write trace.
-- Support iOS objc and swift runtime.
-- Support [dynarmic](https://github.com/MerryMage/dynarmic) fast backend.
-- Support Apple M1 hypervisor, the fastest ARM64 backend.
-- Support Linux KVM backend with Raspberry Pi B4.
-- Experimental Guest Thread Runtime migration for ARM32 and ARM64. Multiple
-  host threads can submit guest calls to one dispatcher-owned backend with
-  guest-thread identity, per-call terminal evidence, task-local CPU context and
-  stack, and invocation-scoped JNI local references.
+The backend owner admits one carrier at a time, restores the task's CPU state,
+drives it until a stop or yield point, retires the carrier, and only then
+publishes the invocation terminal. A guest TID can be reused only after the
+previous incarnation retires; incarnation IDs prevent stale-identity (ABA)
+errors.
 
-See [docs/single-backend-multithreading.md](docs/single-backend-multithreading.md)
-for the execution model, configuration, and limitations.
+See the detailed design and API notes in
+[`docs/single-backend-multithreading.md`](docs/single-backend-multithreading.md).
+
+## Generic integration boundary
+
+Application code can provide a `ThreadTask` and submit it through
+`ThreadDispatcher.runThreadForOutcome` or `submitInvocation`. The dispatcher
+owns backend admission, guest-thread binding, suspension, retirement, and
+terminal publication. Application routing, command handling, readiness policy,
+and library-specific state belong above this runtime.
+
+The public entry points currently include:
+
+- `Emulator.eFuncForOutcome`
+- `Module.emulateFunctionForOutcome`
+- `ThreadDispatcher.submitInvocation`
+- `ThreadDispatcher.runThreadForOutcome`
+- `DvmObject.callJniMethodOutcome`
+- `DvmClass.callStaticJniMethodOutcome`
+
+Callers must consume the returned outcome and acknowledge it. For the JNI
+object helpers, close the nested `InvocationOutcome` obtained from
+`JniInvocationOutcome.getInvocationOutcome()`; reference-scope cleanup is
+completed only after carrier retirement and outcome acknowledgement.
+
+## Build
+
+Requirements:
+
+- JDK 8 or newer
+- Maven or the included Maven wrapper
+
+Compile the Java modules and package the checked-in native artifacts:
+
+```text
+.\mvnw.cmd -DskipTests package
+```
+
+The Maven build packages platform-specific native binaries as-is. It does not
+rebuild the Unicorn JNI library or claim that every optional native backend is
+available on every host platform.
+
+Run the focused runtime tests with:
+
+```text
+.\mvnw.cmd -pl unidbg-api,unidbg-android,backend/unicorn2 -Dmaven.test.skip=false -Dtest=GuestThreadRuntimeTest,InvocationRecordTest,RunWaitGraphTest,InvocationOwnedRuntimeTest,UnicornStopReasonTest test
+```
 
 ## Design references
 
 - [Single-backend multithreading architecture notes](https://bbs.kanxue.com/thread-292140.htm)
 - [Invocation-owned runtime evolution notes](https://bbs.kanxue.com/thread-292016.htm)
 
-The Unicorn JNI bridge uses the checked-in platform binaries under
-`backend/unicorn2/src/main/resources/natives`. The Java build packages these
-artifacts as-is; rebuilding the native library is not part of the Maven build.
+## Relationship to upstream unidbg
 
-## Thanks
-- [unicorn](https://github.com/zhkl0228/unicorn)
-- [dynarmic](https://github.com/MerryMage/dynarmic)
-- [HookZz](https://github.com/jmpews/Dobby)
-- [xHook](https://github.com/iqiyi/xHook)
-- [AndroidNativeEmu](https://github.com/AeonLucid/AndroidNativeEmu)
-- [usercorn](https://github.com/lunixbochs/usercorn)
-- [keystone](https://github.com/keystone-engine/keystone)
-- [capstone](https://github.com/aquynh/capstone)
-- [idaemu](https://github.com/36hours/idaemu)
-- [jelf](https://github.com/fornwall/jelf)
-- [whale](https://github.com/asLody/whale)
-- [kaitai_struct](https://github.com/kaitai-io/kaitai_struct)
-- [fishhook](https://github.com/facebook/fishhook)
-- [runtime_class-dump](https://github.com/Tyilo/runtime_class-dump)
-- [mman-win32](https://github.com/mcgarrah/mman-win32)
+This repository is based on [unidbg](https://github.com/zhkl0228/unidbg)
+`v0.9.8`. The emulator, Android, iOS, and backend capabilities inherited from
+upstream remain available; this fork focuses on the generic runtime migration
+described above.
 
-## Stargazers over time
+## License and acknowledgements
 
-[![Stargazers over time](https://starchart.cc/zhkl0228/unidbg.svg)](https://starchart.cc/zhkl0228/unidbg)
+unidbg is licensed under the Apache License 2.0. See [`LICENSE`](LICENSE) and
+the upstream project for the complete attribution and dependency history.
 
+This project builds on the work of the unidbg, Unicorn, Dynarmic, HookZz,
+xHook, AndroidNativeEmu, usercorn, Keystone, Capstone, idaemu, jelf, Whale,
+Kaitai Struct, fishhook, runtime_class-dump, and mman-win32 projects.
