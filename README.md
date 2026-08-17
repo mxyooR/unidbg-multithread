@@ -3,17 +3,24 @@
 Allows you to emulate an Android native library, and an experimental iOS emulation.<br>
 
 This project is an experimental `v0.9.8` fork of unidbg for generic,
-single-backend multithreading. It adds an Invocation-Owned Runtime without
-embedding application-specific SO names, command IDs, routers, or assets.
+single-backend multithreading. It is migrating from invocation ownership to a
+Guest Thread Runtime without embedding application-specific SO names, command
+IDs, routers, or assets.
 
 ## Development status
 
-The Invocation-Owned Runtime is under active development. The current branch
-implements serialized backend ownership, foreign host-thread submission,
-task-local register contexts and stacks, exact invocation terminals, and
-invocation-scoped JNI local references and pending exceptions. APIs and edge
-case behavior may still change while cancellation, backend coverage, and JNI
-contracts are expanded.
+The Guest Thread Runtime is under active development. The current branch has a
+generic four-layer identity model (`RunContext`, `GuestThreadIncarnation`,
+`InvocationRecord`, and `CarrierLease`), serialized backend ownership, foreign
+host-thread submission, exact invocation terminals, typed wait dependencies,
+and admission/retirement evidence. Guest errno, `JNIEnv` attachment, and
+pending exceptions follow guest-thread identity; JNI local references remain
+invocation-scoped.
+
+Strict LIFO parent/child continuation contracts are present, but synchronous
+guest re-entry on the backend-owner thread is not connected to nested backend
+execution yet and is rejected. Physical worker stacks are still task-owned.
+The APIs and lifecycle contracts may change as that migration continues.
 
 This is not simultaneous execution of one Unicorn engine on multiple CPU cores.
 Guest calls take turns on one backend at explicit yield and stop points.
@@ -59,9 +66,10 @@ Simple tests under src/test directory
 - Support [dynarmic](https://github.com/MerryMage/dynarmic) fast backend.
 - Support Apple M1 hypervisor, the fastest ARM64 backend.
 - Support Linux KVM backend with Raspberry Pi B4.
-- Experimental Invocation-Owned Runtime for ARM32 and ARM64. Multiple host
-  threads can submit guest calls to one dispatcher-owned backend with per-call
-  identity, terminal evidence, CPU context, stack, and JNI reference scope.
+- Experimental Guest Thread Runtime migration for ARM32 and ARM64. Multiple
+  host threads can submit guest calls to one dispatcher-owned backend with
+  guest-thread identity, per-call terminal evidence, task-local CPU context and
+  stack, and invocation-scoped JNI local references.
 
 See [docs/single-backend-multithreading.md](docs/single-backend-multithreading.md)
 for the execution model, configuration, and limitations.

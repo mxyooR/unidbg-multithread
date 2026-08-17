@@ -1,48 +1,67 @@
 # Single-backend multithreading
 
-This experimental fork can run guest work submitted by multiple Java host
-threads while keeping one emulator backend as the source of truth. The runtime
-is generic: admission and ownership are based on invocation identity, not on a
-library name, native command ID, or application workflow.
+This experimental `v0.9.8` fork accepts guest work from multiple Java host
+threads while keeping one emulator backend as the source of truth. Runtime
+admission uses generic identities and evidence. It does not depend on a library
+name, native command ID, or application workflow.
 
-This is cooperative execution with preemption points, not simultaneous
-execution of one Unicorn engine on multiple CPU cores.
+The Guest Thread Runtime migration is under development. One backend still
+executes one carrier at a time; this is deterministic interleaving at explicit
+stop and yield points, not simultaneous multi-core guest execution.
 
-## Execution model
+## Ownership model
 
-1. The first caller that enters the dispatcher becomes the backend owner.
-2. A call made by another host thread is represented by a `ThreadTask` and put
-   into the external task queue.
-3. The owner drains that queue, restores the selected task's saved CPU context,
-   and runs the task on the backend.
-4. A task yields through the existing context-switch, futex, signal, or native
-   instruction-budget path. Its registers are saved and another runnable task
-   is selected.
-5. The submitting host thread receives the task result through a private future;
-   it never invokes the backend directly. Owner selection and first submission
-   are one atomic dispatcher operation, including when idle callers start at the
-   same time.
+The runtime separates four identities:
 
-The native Unicorn bridge records a stop reason and guest PC for each run. The
-instruction-budget hook requests a stop from inside the code hook, while the
-cross-thread stop flag provides a safe handoff for `emu_stop` requests.
+| Layer | Owns | Does not own |
+| --- | --- | --- |
+| `RunContext` | one emulator-run identity, guest-thread registry, active invocations, wait graph, fault and terminal evidence | application workflow |
+| `GuestThreadIncarnation` | stable incarnation ID, guest TID, errno, `JNIEnv`, pending exception, thread attachments, invocation stack | one host Java thread |
+| `InvocationRecord` | one call ID and generation, immutable context, completion, JNI local-reference scope, terminal | persistent guest-thread identity |
+| `CarrierLease` | temporary permission to drive the backend, proven by admission and retirement receipts | guest TID or JNI identity |
 
-## Invocation-Owned Runtime
+A guest TID may be reused only after the old thread retires. The monotonically
+increasing incarnation ID keeps the old and new threads distinct and prevents
+TID-based ABA errors.
 
-Each tracked native entry has an `InvocationRecord` containing a unique ID,
-generation, submitter identity, immutable `InvocationContext`, carrier task,
-state, and private completion future. A timeslice, backend handoff, or futex wait
-is non-terminal and cannot be published as a native return.
+The current physical register context and worker stack remain owned by the
+`Task`. Moving persistent stack ownership into `GuestThreadIncarnation` is a
+remaining part of the migration.
 
-Terminal results are represented by `InvocationResult`:
+## Dispatch and handoff
+
+1. The first caller atomically becomes the backend owner and starts the
+   dispatcher loop.
+2. A call from another host thread becomes a `ThreadTask` with an exact
+   `InvocationRecord` and enters the external queue.
+3. The owner drains the queue, admits one carrier lease, restores that task's
+   CPU context, and drives the backend.
+4. A context switch, futex wait, signal path, backend stop, or native
+   instruction budget can suspend the task. The lease retires before another
+   invocation is admitted.
+5. Completion, fault, timeout, or cancellation is published through the
+   invocation's private future only after carrier retirement.
+
+The submitting foreign host thread waits for its own outcome and never invokes
+the backend directly. Idle owner selection and first submission are one
+synchronized operation, including when two callers start at the same time.
+
+Unicorn2 records a stop reason and guest PC for each run. Its instruction-budget
+hook requests a timeslice stop from the code hook, while cross-thread stop
+requests use the bridge's stop flag. Other backends retain their existing
+behavior through optional backend capability methods.
+
+## Invocation outcomes
+
+`InvocationResult` distinguishes the following terminal states:
 
 - `COMPLETED` carries the exact return value, including a distinct null value.
-- `FAULT` carries the original failure instead of converting it to `-1`.
-- `TIMEOUT` and `CANCELLED` preserve the requesting invocation's identity.
+- `FAULT` retains the original failure.
+- `TIMEOUT` and `CANCELLED` retain the requesting invocation's ownership.
 
-`InvocationOutcome` couples that terminal to its owner. Callers must close the
-outcome, or call `acknowledgeOutcome()`, after consuming the result. Temporary
-resources are released only after both carrier retirement and outcome
+`InvocationOutcome` couples a terminal to its exact invocation. Callers close
+the outcome, or call `acknowledgeOutcome()`, after consuming it. An invocation
+reference scope is released only after both carrier retirement and outcome
 acknowledgement.
 
 The public generic entry points are:
@@ -54,74 +73,110 @@ The public generic entry points are:
 - `DvmClass.callStaticJniMethodOutcome` and
   `callStaticJniMethodObjectOutcome`
 
-An owner can request cooperative termination through
-`ThreadDispatcher.cancelInvocation` or `timeoutInvocation`. The request first
-moves the invocation to quiescing; its terminal is published only after the
-carrier has stopped and its backend context has been destroyed.
+Cancellation and timeout are cooperative. The request enters quiescing first;
+the terminal is completed after the carrier stops and its task resources have
+been retired.
 
-## Task-local state
+## Guest-thread JNI state
 
-`NativeWorkerTask32` and `NativeWorkerTask64` initialize arguments on a stack
-allocated for that task. The task's register context and stack remain available
-across a yield and are released when the task finishes. The process-loader stack
-pointer is not changed by foreign-thread argument setup.
+`ThreadIdentityProvider` resolves the currently admitted guest thread instead
+of using the host Java thread as guest identity. Each active guest thread has a
+stable `JNIEnv` pointer and its own pending-exception slot. The 32-bit and
+64-bit `AttachCurrentThread`, `DetachCurrentThread`, and `GetEnv` paths use that
+guest-thread attachment.
 
-The `AddressedWaiter` contract keeps futex waiters associated with an exact guest
-address and expected value. Wake-up code can therefore inspect all dispatcher
-task sources, including tasks submitted from another host thread.
+JNI local references are intentionally invocation-scoped rather than
+thread-scoped. `PushLocalFrame`, `PopLocalFrame`, and `DeleteLocalRef` therefore
+operate on the active invocation scope, while `JNIEnv` and pending exceptions
+remain stable across calls on the same guest thread.
 
-For invocation-owned Android JNI calls, local references are stored in a VM
-scope belonging to that invocation. `PushLocalFrame`, `PopLocalFrame`, and
-`DeleteLocalRef` operate on that scope. Pending JNI exceptions are isolated in
-the same way, so one suspended call does not expose its local exception slot to
-another call.
+## Wait, fault, and terminal evidence
+
+`RunWaitGraph` publishes typed dependency batches atomically. Supported
+dependency identities include exact invocations, futex address/value pairs,
+guest-thread incarnations, callback mailboxes, and external resources. A batch
+that introduces an invocation cycle is rejected without changing the graph
+epoch or publishing a partial edge set.
+
+When an invocation becomes terminal, both its outgoing and incoming invocation
+edges are removed. `RootFaultController` first quarantines the run, which
+freezes new admission, and only then snapshots transitive dependents while the
+graph evidence is intact.
+
+The run terminal ledger records immutable `InvocationEvidence`: run, guest
+thread, invocation/generation, terminal, and all admission and retirement
+receipts. This is runtime evidence, not an application readiness policy.
+
+## Continuation status
+
+`InvocationStack` enforces strict LIFO continuation ordering. The model carries
+an explicit `ReentryMode`, exact parent continuation ID, guest-thread identity,
+binding epoch, and stack depth. It rejects a child attached to the wrong parent,
+thread, binding epoch, or depth, and rejects non-LIFO completion.
+
+This contract is not yet a production nested-backend implementation. A
+synchronous guest call submitted from the current dispatcher owner is still
+rejected. Completing this path requires a real callback return boundary,
+backend CPU snapshot, non-overlapping child ABI frame, and exact parent restore;
+placing the child in the ordinary FIFO would deadlock behind its parent.
+
+Same-thread synchronous re-entry, same-thread asynchronous mailbox work, and
+cross-thread synchronous submission must remain distinct modes.
 
 ## Configuration
 
 The native instruction budget is enabled only when the dispatcher has more than
 one runnable source. Set `unidbg.nativeTimesliceBudget` as a Java system property
-or environment value to change the default budget of `100000` guest instructions.
-Values less than or equal to zero disable the native budget for that run.
+or environment value to change the default budget of `100000` guest
+instructions. Values less than or equal to zero disable it for that run.
 
-Backends that do not implement native timeslice or exact stop-reason support
-continue to use their existing behavior. The backend API supplies no-op
-capability defaults so custom backends remain source-compatible. Exact
-cross-thread stop evidence is currently verified with Unicorn2.
+Exact stop-reason and cross-thread stop evidence is currently verified with
+Unicorn2. Custom backends remain source-compatible through no-op capability
+defaults.
 
 ## Verified contracts
 
-The repository contains generic tests with anonymous ARM64 instructions only:
+The repository tests use anonymous ARM instructions and generic runtime tasks.
+They verify:
 
-- two host callers starting while the backend is idle acquire one backend owner;
-- a foreign caller receives a turn before a long-running caller completes;
-- register results remain isolated across suspend and restore;
-- cross-thread `emu_stop` and native instruction budgets expose distinct stop
-  reasons;
-- cancellation, timeout, ownership mismatch, and two-latch reference cleanup
-  preserve invocation identity.
+- two simultaneous idle callers acquire exactly one backend owner;
+- a foreign caller receives a turn and register results survive suspend/restore;
+- guest threads have distinct live TIDs, incarnation IDs, and `JNIEnv` pointers;
+- errno and pending JNI exceptions do not cross guest-thread boundaries;
+- admission and retirement receipts balance in terminal evidence;
+- cancellation, timeout, ownership mismatch, and two-latch reference cleanup;
+- atomic multi-edge publication, whole-graph cycle rejection, terminal edge
+  cleanup, root-fault ordering, and transitive dependent snapshots;
+- strict LIFO parent/child continuation behavior;
+- Unicorn2 timeslice and cross-thread stop reasons.
 
-## Limitations
+## Current limitations
 
-- One backend is still serialized: this does not provide true parallel guest
-  execution or multi-core memory consistency.
-- Cancellation and timeout are cooperative. A backend or hook that cannot reach
-  a supported stop point may delay carrier retirement.
-- A synchronous guest re-entry from the dispatcher owner thread is rejected by
-  `runThreadForResult`; callers should return to the dispatcher or submit work
-  from another host thread.
-- Backend hooks and emulator-wide loader state are shared resources. Code that
-  mutates such state must do so while its task owns the backend.
-- Invocation-scoped JNI local references and pending exceptions are covered;
-  complete isolation of every emulator-global subsystem is not claimed.
-- The Invocation-Owned Runtime APIs are under active development and may change
-  before they are considered stable.
-- Native binaries are platform-specific. The checked-in artifacts must match the
-  corresponding JNI bridge and are not rebuilt by the Java Maven build.
+- The single backend is serialized. There is no true parallel guest execution
+  or multi-core memory-consistency model.
+- Synchronous owner-thread guest re-entry has a model contract but no production
+  nested-backend path and is rejected.
+- Worker CPU contexts and physical stack allocations are task-owned, not yet
+  persistent guest-thread-owned stack regions with canary evidence.
+- Full pthread/TCB/TLS, signal, futex-owner, and thread-exit semantics are not
+  yet represented by the guest-thread object.
+- Cancellation depends on reaching a supported stop point. The current run
+  close path does not claim a complete quiescence proof for every backend hook.
+- Backend hooks, VM globals, loader state, memory, and file descriptors remain
+  shared run resources. This fork does not claim isolation of every emulator
+  subsystem.
+- Exact stop-reason behavior has been exercised with Unicorn2; parity across all
+  optional backends is not claimed.
+- APIs and lifecycle contracts may change while the Guest Thread Runtime is
+  under development.
+- Checked-in native binaries are platform-specific and are packaged as-is by
+  Maven; the Java build does not rebuild them.
 
-## Extension points
+## Extension boundary
 
-Implementations may add another `ThreadTask` type for a generic guest entry,
-then call `ThreadDispatcher.runThreadForOutcome`. The task must initialize all
-guest-visible registers and use its own stack; it must not call the backend from
-the submitting host thread. Application policy belongs above this runtime and
-must not be encoded in dispatcher admission or terminal ownership.
+A generic integration may implement another `ThreadTask` and call
+`ThreadDispatcher.runThreadForOutcome`. It must initialize all guest-visible
+registers, use an isolated task stack, and let the dispatcher own backend
+admission. Application routing, command IDs, readiness rules, and SO-specific
+state belong above this runtime and must not be added to dispatcher or guest
+identity code.
