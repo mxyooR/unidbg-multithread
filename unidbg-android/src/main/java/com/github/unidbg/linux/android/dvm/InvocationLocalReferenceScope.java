@@ -93,6 +93,7 @@ final class InvocationLocalReferenceScope implements InvocationReferenceScope {
     }
 
     synchronized void clearPendingException() {
+        ensureOpen();
         pendingException = null;
     }
 
@@ -155,9 +156,19 @@ final class InvocationLocalReferenceScope implements InvocationReferenceScope {
             pendingException = null;
         }
         vm.deleteInvocationLocalRefs(released);
-        if (releasedException != null) {
+        if (releasedException != null && !containsObject(released, releasedException)) {
             releasedException.onDeleteRef();
         }
+    }
+
+    private static boolean containsObject(Map<Integer, BaseVM.ObjRef> references,
+                                          DvmObject<?> object) {
+        for (BaseVM.ObjRef reference : references.values()) {
+            if (reference.obj == object) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private void ensureOpen() {

@@ -18,9 +18,9 @@
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
         <maven.test.skip>true</maven.test.skip>
     </properties>
-    <name>unidbg</name>
-    <description>Allows you to emulate an Android ARM32 and/or ARM64 native library</description>
-    <url>https://github.com/zhkl0228/unidbg</url>
+    <name>unidbg-multithreading</name>
+    <description>Experimental unidbg v0.9.8 fork for generic invocation-owned single-backend multithreading</description>
+    <url>https://github.com/mxyooR/unidbg-multithreading</url>
     <licenses>
         <license>
             <name>The Apache Software License, Version 2.0</name>
@@ -34,9 +34,9 @@
         </developer>
     </developers>
     <scm>
-        <connection>scm:git:git@github.com:zhkl0228/unidbg.git</connection>
-        <developerConnection>scm:git:git@github.com:zhkl0228/unidbg.git</developerConnection>
-        <url>git@github.com:zhkl0228/unidbg.git</url>
+        <connection>scm:git:https://github.com/mxyooR/unidbg-multithreading.git</connection>
+        <developerConnection>scm:git:git@github.com:mxyooR/unidbg-multithreading.git</developerConnection>
+        <url>https://github.com/mxyooR/unidbg-multithreading</url>
     </scm>
     <build>
         <resources>

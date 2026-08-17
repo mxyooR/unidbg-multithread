@@ -48,6 +48,11 @@ public interface ThreadDispatcher extends SignalOps {
         return false;
     }
 
+    /** Requests a timeout terminal; completion waits for carrier retirement. */
+    default boolean timeoutInvocation(InvocationRecord invocation, String detail) {
+        return false;
+    }
+
     /** Returns the invocation driven by the current backend-owner thread, if any. */
     default InvocationRecord getRunningInvocation() {
         return null;

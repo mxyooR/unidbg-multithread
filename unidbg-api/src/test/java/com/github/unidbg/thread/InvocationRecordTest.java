@@ -8,7 +8,9 @@ import java.util.concurrent.TimeUnit;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
+import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
+import static org.junit.Assert.fail;
 
 public class InvocationRecordTest {
 
@@ -51,6 +53,84 @@ public class InvocationRecordTest {
         assertTrue(record.admit());
         assertFalse(record.complete(InvocationResult.timeslice()));
         assertEquals(InvocationRecord.State.ADMITTED, record.getState());
+    }
+
+    @Test
+    public void cancellationQuiescesBeforePublishingTerminal() throws Exception {
+        TestScope scope = new TestScope();
+        InvocationRecord record = newRecord(3L, scope);
+        record.markQueued();
+        assertTrue(record.admit());
+
+        assertTrue(record.requestCancellation("caller cancelled"));
+        assertEquals(InvocationRecord.State.CANCEL_REQUESTED, record.getState());
+        assertFalse(record.complete(InvocationResult.completed(9L)));
+        assertFalse(record.finishRequestedTermination());
+        assertTrue(record.beginQuiescing());
+        assertTrue(record.finishRequestedTermination());
+        assertEquals(InvocationRecord.State.CANCELLED, record.getState());
+
+        record.markCarrierRetired();
+        InvocationOutcome outcome = record.await(1, TimeUnit.SECONDS);
+        assertTrue(outcome.getResult().isCancelled());
+        assertEquals("caller cancelled", outcome.getResult().getDetail());
+        assertFalse(scope.closed);
+        outcome.acknowledgeOutcome();
+        assertTrue(scope.closed);
+    }
+
+    @Test
+    public void timeoutKeepsItsOwnTerminalKind() throws Exception {
+        InvocationRecord record = newRecord(4L, null);
+        record.markQueued();
+        assertTrue(record.requestTimeout("deadline reached"));
+        assertTrue(record.beginQuiescing());
+        assertTrue(record.finishRequestedTermination());
+
+        InvocationOutcome outcome = record.await(1, TimeUnit.SECONDS);
+        assertEquals(InvocationResult.State.TIMEOUT, outcome.getResult().getState());
+        assertEquals(InvocationResult.Kind.TIMEOUT, outcome.getResult().getKind());
+        assertEquals("deadline reached", outcome.getResult().getDetail());
+    }
+
+    @Test
+    public void lateReferenceScopeReceivesBothReleaseLatches() throws Exception {
+        InvocationRecord record = newRecord(5L, null);
+        record.markQueued();
+        assertTrue(record.admit());
+        assertTrue(record.complete(InvocationResult.completed(1L)));
+        record.markCarrierRetired();
+        InvocationOutcome outcome = record.await(1, TimeUnit.SECONDS);
+        outcome.acknowledgeOutcome();
+
+        TestScope lateScope = new TestScope();
+        assertTrue(record.installReferenceScope(lateScope));
+        assertTrue(lateScope.bound);
+        assertTrue(lateScope.closed);
+    }
+
+    @Test
+    public void resultOwnedByAnotherInvocationIsRejected() {
+        InvocationRecord record = newRecord(6L, null);
+        record.markQueued();
+        assertTrue(record.admit());
+        InvocationResult.Ownership other = new InvocationResult.Ownership(
+                99L, 99L, Thread.currentThread().getId(), "other", "other-entry");
+        InvocationResult foreign = InvocationResult.completed(3L).withOwnership(other);
+
+        try {
+            record.complete(foreign);
+            fail("foreign result was accepted");
+        } catch (IllegalArgumentException expected) {
+            assertNull(record.getTerminal());
+            assertEquals(InvocationRecord.State.ADMITTED, record.getState());
+        }
+    }
+
+    private static InvocationRecord newRecord(long id, InvocationReferenceScope scope) {
+        return new InvocationRecord(
+                id, id, Thread.currentThread(), new NoopTask(),
+                InvocationContext.builder().operation("test-entry").build(), scope);
     }
 
     private static final class NoopTask extends ThreadTask {

@@ -22,6 +22,52 @@ import static org.junit.Assert.assertTrue;
 public class InvocationOwnedRuntimeTest {
 
     @Test
+    public void simultaneousIdleCallersAcquireOneBackendOwner() throws Exception {
+        AndroidEmulator emulator = AndroidEmulatorBuilder.for64Bit()
+                .addBackendFactory(new Unicorn2Factory(true))
+                .setProcessName("invocation-contract")
+                .build();
+        try {
+            long function = 0x100000000L;
+            Backend backend = emulator.getBackend();
+            backend.mem_map(function, 0x1000, 7);
+            backend.mem_write(function, new byte[]{
+                    0x00, 0x04, 0x00, (byte) 0x91, // add x0, x0, #1
+                    (byte) 0xc0, 0x03, 0x5f, (byte) 0xd6 // ret
+            });
+
+            for (int i = 0; i < 100; i++) {
+                CountDownLatch ready = new CountDownLatch(2);
+                CountDownLatch start = new CountDownLatch(1);
+                AtomicReference<Number> firstResult = new AtomicReference<>();
+                AtomicReference<Number> secondResult = new AtomicReference<>();
+                AtomicReference<Throwable> failure = new AtomicReference<>();
+                Thread first = new Thread(() -> runConcurrentCall(
+                        emulator, function, 10L, ready, start, firstResult, failure),
+                        "idle-owner-one");
+                Thread second = new Thread(() -> runConcurrentCall(
+                        emulator, function, 20L, ready, start, secondResult, failure),
+                        "idle-owner-two");
+
+                first.start();
+                second.start();
+                assertTrue("callers did not become ready", ready.await(2, TimeUnit.SECONDS));
+                start.countDown();
+                first.join(2000);
+                second.join(2000);
+
+                assertTrue("first caller did not finish", !first.isAlive());
+                assertTrue("second caller did not finish", !second.isAlive());
+                assertNull(failure.get());
+                assertEquals(Long.valueOf(11L), firstResult.get());
+                assertEquals(Long.valueOf(21L), secondResult.get());
+            }
+        } finally {
+            emulator.close();
+        }
+    }
+
+    @Test
     public void foreignHostCallGetsBackendTurnAndKeepsRegistersIsolated() throws Exception {
         AndroidEmulator emulator = AndroidEmulatorBuilder.for64Bit()
                 .addBackendFactory(new Unicorn2Factory(true))
@@ -100,6 +146,19 @@ public class InvocationOwnedRuntimeTest {
                 second.join(2000);
             }
             emulator.close();
+        }
+    }
+
+    private static void runConcurrentCall(
+            AndroidEmulator emulator, long function, long argument,
+            CountDownLatch ready, CountDownLatch start,
+            AtomicReference<Number> result, AtomicReference<Throwable> failure) {
+        try {
+            ready.countDown();
+            start.await();
+            result.set(emulator.eFunc(function, argument));
+        } catch (Throwable e) {
+            failure.compareAndSet(null, e);
         }
     }
 }

@@ -33,8 +33,8 @@ public final class InvocationRecord {
     private volatile State state = State.RESERVED;
     private volatile InvocationResult terminal;
     private volatile InvocationResult requestedTerminal;
-    private boolean carrierRetired;
-    private boolean outcomeAcknowledged;
+    private volatile boolean carrierRetired;
+    private volatile boolean outcomeAcknowledged;
 
     InvocationRecord(long invocationId, long generation, Thread submitterThread,
                      ThreadTask carrier, InvocationContext context,
@@ -81,8 +81,7 @@ public final class InvocationRecord {
     }
 
     public synchronized boolean installReferenceScope(InvocationReferenceScope scope) {
-        if (scope == null || referenceScope != null
-                || state == State.TERMINAL || state == State.CANCELLED) {
+        if (scope == null || referenceScope != null) {
             return false;
         }
         scope.bindToCarrier();
@@ -129,7 +128,7 @@ public final class InvocationRecord {
         return requestTermination(InvocationResult.cancelled(detail));
     }
 
-    synchronized boolean requestTimeout(String detail) {
+    public boolean requestTimeout(String detail) {
         return requestTermination(InvocationResult.timeout(detail));
     }
 
@@ -158,6 +157,9 @@ public final class InvocationRecord {
                 || state == State.CANCELLED) {
             return false;
         }
+        if (result.isCompleted() && isTerminationRequested()) {
+            return false;
+        }
         terminal = result.withOwnership(ownership);
         state = State.TERMINAL;
         completion.complete(new InvocationOutcome(this, terminal));
@@ -166,6 +168,9 @@ public final class InvocationRecord {
 
     synchronized boolean finishRequestedTermination() {
         if (terminal != null || state == State.TERMINAL || state == State.CANCELLED) {
+            return false;
+        }
+        if (state != State.QUIESCING) {
             return false;
         }
         InvocationResult requested = requestedTerminal == null

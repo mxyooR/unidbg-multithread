@@ -1,17 +1,22 @@
-# unidbg
+# unidbg-multithreading
 
 Allows you to emulate an Android native library, and an experimental iOS emulation.<br>
 
-This fork is maintained on the `v0.9.8` line. The changes in this branch are
-generic runtime and backend changes; application-specific examples and assets
-are intentionally outside the scope of the fork.
+This project is an experimental `v0.9.8` fork of unidbg for generic,
+single-backend multithreading. It adds an Invocation-Owned Runtime without
+embedding application-specific SO names, command IDs, routers, or assets.
 
 ## Development status
 
-The generic Invocation-Owned Runtime migration is currently under development.
-The branch currently contains the foundational single-backend task dispatch and
-native timeslice work; invocation identity, exact terminal ownership, and
-invocation-scoped JNI lifetime are still being migrated and may change.
+The Invocation-Owned Runtime is under active development. The current branch
+implements serialized backend ownership, foreign host-thread submission,
+task-local register contexts and stacks, exact invocation terminals, and
+invocation-scoped JNI local references and pending exceptions. APIs and edge
+case behavior may still change while cancellation, backend coverage, and JNI
+contracts are expanded.
+
+This is not simultaneous execution of one Unicorn engine on multiple CPU cores.
+Guest calls take turns on one backend at explicit yield and stop points.
 
 This is an educational project to learn more about the ELF/MachO file format and ARM assembly.<br>
 
@@ -54,12 +59,17 @@ Simple tests under src/test directory
 - Support [dynarmic](https://github.com/MerryMage/dynarmic) fast backend.
 - Support Apple M1 hypervisor, the fastest ARM64 backend.
 - Support Linux KVM backend with Raspberry Pi B4.
-- Foundational single-backend task dispatch for ARM32 and ARM64. Host threads
-  can submit guest worker tasks to one dispatcher-owned backend with task-local
-  CPU context and stacks.
+- Experimental Invocation-Owned Runtime for ARM32 and ARM64. Multiple host
+  threads can submit guest calls to one dispatcher-owned backend with per-call
+  identity, terminal evidence, CPU context, stack, and JNI reference scope.
 
 See [docs/single-backend-multithreading.md](docs/single-backend-multithreading.md)
 for the execution model, configuration, and limitations.
+
+## Design references
+
+- [Single-backend multithreading architecture notes](https://bbs.kanxue.com/thread-292140.htm)
+- [Invocation-owned runtime evolution notes](https://bbs.kanxue.com/thread-292016.htm)
 
 The Unicorn JNI bridge uses the checked-in platform binaries under
 `backend/unicorn2/src/main/resources/natives`. The Java build packages these

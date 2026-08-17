@@ -11,7 +11,9 @@ public final class InvocationOutcome implements AutoCloseable {
         if (invocation == null || result == null || !result.isTerminal()
                 || result.getOwnership() == null
                 || result.getOwnership().getInvocationId() != invocation.getInvocationId()
-                || result.getOwnership().getGeneration() != invocation.getGeneration()) {
+                || result.getOwnership().getGeneration() != invocation.getGeneration()
+                || result.getOwnership().getSubmitterThreadId()
+                != invocation.getSubmitterThread().getId()) {
             throw new IllegalArgumentException("result does not belong to invocation");
         }
         this.invocation = invocation;

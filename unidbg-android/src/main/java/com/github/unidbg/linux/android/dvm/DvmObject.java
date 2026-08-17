@@ -133,21 +133,21 @@ public class DvmObject<T> extends Hashable {
             Emulator<?> emulator, VM vm, DvmClass objectType, DvmObject<?> thisObj,
             InvocationContext context, boolean forceInvocation,
             String method, Object... args) {
+        if (!(vm instanceof BaseVM)) {
+            throw new IllegalStateException("JNI calls require BaseVM");
+        }
+        BaseVM baseVm = (BaseVM) vm;
         boolean invocationOwned = forceInvocation
                 || emulator.getThreadDispatcher().isBackendOwnedByAnotherThread();
         if (!invocationOwned) {
             JniCall call = prepareJniCall(emulator, vm, objectType, thisObj, null, method, args);
             Number value = Module.emulateFunction(emulator, call.function.peer,
                     call.arguments.toArray());
-            return new JniCallResult((BaseVM) vm, value, null, null);
-        }
-        if (!(vm instanceof BaseVM)) {
-            throw new IllegalStateException("invocation-owned JNI calls require BaseVM");
+            return new JniCallResult(baseVm, value, null, null);
         }
         InvocationContext actualContext = context == null
                 ? InvocationContext.builder().operation(method).origin("dvm-jni").build()
                 : context;
-        BaseVM baseVm = (BaseVM) vm;
         InvocationReferenceScope referenceScope = baseVm.createInvocationReferenceScope();
         try {
             JniCall call = prepareJniCall(emulator, vm, objectType, thisObj,

@@ -257,10 +257,11 @@ public abstract class AbstractARMEmulator<T extends NewFileIO> extends AbstractE
 
     @Override
     public Number eFunc(long begin, Number... arguments) {
-        if (getThreadDispatcher() instanceof UniThreadDispatcher
-                && ((UniThreadDispatcher) getThreadDispatcher()).isDispatchingOnOtherThread()) {
-            return runThreadForResult(new NativeWorkerTask32(getPid(), begin, LR,
-                    isPaddingArgument(), arguments));
+        if (getThreadDispatcher() instanceof UniThreadDispatcher) {
+            return ((UniThreadDispatcher) getThreadDispatcher()).runFunctionForResult(
+                    new Function32(getPid(), begin, LR, isPaddingArgument(), arguments),
+                    new NativeWorkerTask32(getPid(), begin, LR,
+                            isPaddingArgument(), arguments));
         }
         return runMainForResult(new Function32(getPid(), begin, LR, isPaddingArgument(), arguments));
     }
