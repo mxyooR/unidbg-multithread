@@ -221,7 +221,7 @@ Requirements:
 Compile the Java modules and package the checked-in native artifacts:
 
 ```text
-.\mvnw.cmd -DskipTests package
+& .\mvnw.cmd '-DskipTests' 'package'
 ```
 
 The Maven build packages platform-specific native binaries as-is. It does not
@@ -231,7 +231,7 @@ available on every host platform.
 Run the focused runtime tests with:
 
 ```text
-.\mvnw.cmd -pl unidbg-android -am -Dmaven.test.skip=false -DskipTests=false -DfailIfNoTests=false -Dtest=GuestThreadRuntimeTest,InvocationRecordTest,RunWaitGraphTest,InvocationOwnedRuntimeTest,GuestThreadJniRuntimeTest,UnicornStopReasonTest test
+& .\mvnw.cmd '-pl' 'unidbg-android' '-am' '-Dmaven.test.skip=false' '-DskipTests=false' '-DfailIfNoTests=false' '-Dtest=GuestThreadRuntimeTest,InvocationRecordTest,RunWaitGraphTest,InvocationOwnedRuntimeTest,GuestThreadJniRuntimeTest,UnicornStopReasonTest' 'test'
 ```
 
 The repository also publishes the same checks as a GitHub Actions workflow at

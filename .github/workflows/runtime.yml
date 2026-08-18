@@ -52,12 +52,12 @@ jobs:
 
       - name: Run backend stop-reason tests
         run: >-
-          .\mvnw.cmd -pl backend/unicorn2 -am
-          -Dmaven.test.skip=false -DskipTests=false -DfailIfNoTests=false
-          -Dtest=UnicornStopReasonTest test
+          & .\mvnw.cmd '-pl' 'backend/unicorn2' '-am'
+          '-Dmaven.test.skip=false' '-DskipTests=false' '-DfailIfNoTests=false'
+          '-Dtest=UnicornStopReasonTest' 'test'
 
       - name: Run generic Android runtime tests
         run: >-
-          .\mvnw.cmd -pl unidbg-android -am
-          -Dmaven.test.skip=false -DskipTests=false -DfailIfNoTests=false
-          "-Dtest=InvocationOwnedRuntimeTest,GuestThreadJniRuntimeTest" test
+          & .\mvnw.cmd '-pl' 'unidbg-android' '-am'
+          '-Dmaven.test.skip=false' '-DskipTests=false' '-DfailIfNoTests=false'
+          '-Dtest=InvocationOwnedRuntimeTest,GuestThreadJniRuntimeTest' 'test'
