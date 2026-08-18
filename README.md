@@ -6,11 +6,9 @@
 Experimental `unidbg v0.9.8` fork for a generic **Guest Thread Runtime** and
 single-backend multithreading.
 
-> **Status: under development.**
->
-> Multiple Java host threads can submit guest work while one emulator backend
-> remains the source of truth. Guest work is interleaved at explicit stop and
-> yield points; this is not simultaneous execution on multiple CPU cores.
+Multiple Java host threads can submit guest work while one emulator backend
+remains the source of truth. Guest work is interleaved at explicit stop and
+yield points; this is not simultaneous execution on multiple CPU cores.
 
 This fork is intended to provide reusable runtime infrastructure. It does not
 contain SO-specific names, command IDs, application routers, readiness rules,

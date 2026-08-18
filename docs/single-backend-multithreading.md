@@ -5,7 +5,7 @@ threads while keeping one emulator backend as the source of truth. Runtime
 admission uses generic identities and evidence. It does not depend on a library
 name, native command ID, or application workflow.
 
-The Guest Thread Runtime migration is under development. One backend still
+The Guest Thread Runtime follows the staged model below. One backend still
 executes one carrier at a time; this is deterministic interleaving at explicit
 stop and yield points, not simultaneous multi-core guest execution.
 
@@ -331,8 +331,7 @@ The current generic contracts include:
   subsystem.
 - Exact stop-reason behavior has been exercised with Unicorn2; parity across all
   optional backends is not claimed.
-- APIs and lifecycle contracts may change while the Guest Thread Runtime is
-  under development.
+- APIs and lifecycle contracts may change as this experimental runtime evolves.
 - Checked-in native binaries are platform-specific and are packaged as-is by
   Maven; the Java build does not rebuild them.
 
