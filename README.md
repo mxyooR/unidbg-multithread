@@ -235,9 +235,11 @@ Run the focused runtime tests with:
 ```
 
 The repository also publishes the same checks as a GitHub Actions workflow at
-[`runtime.yml`](.github/workflows/runtime.yml). It runs API model tests,
-Unicorn2 stop-reason tests, generic Android ARM32/ARM64 runtime tests, and a
-Java package build.
+[`runtime.yml`](.github/workflows/runtime.yml). Linux runs the API model tests
+and Java package build. Windows runs the checked-in Unicorn2 native bridge,
+stop-reason tests, and generic Android ARM32/ARM64 runtime tests. This split is
+intentional: native stop-reason parity is not claimed for the checked-in Linux
+bridge yet.
 
 ## Contributing and roadmap
 

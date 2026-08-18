@@ -14,14 +14,14 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  runtime:
+  model-and-build:
     runs-on: ubuntu-latest
     steps:
       - name: Check out source
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Set up Java
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: '17'
@@ -32,19 +32,32 @@ jobs:
           ./mvnw -pl unidbg-api
           -Dmaven.test.skip=false -DskipTests=false -DfailIfNoTests=false test
 
+      - name: Package Java modules
+        run: >-
+          ./mvnw -pl unidbg-android -am -DskipTests
+          -Dmaven.javadoc.skip=true -Dgpg.skip=true package
+
+  unicorn-runtime-windows:
+    runs-on: windows-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v5
+
+      - name: Set up Java
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: maven
+
       - name: Run backend stop-reason tests
         run: >-
-          ./mvnw -pl backend/unicorn2 -am
+          .\mvnw.cmd -pl backend/unicorn2 -am
           -Dmaven.test.skip=false -DskipTests=false -DfailIfNoTests=false
           -Dtest=UnicornStopReasonTest test
 
       - name: Run generic Android runtime tests
         run: >-
-          ./mvnw -pl unidbg-android -am
+          .\mvnw.cmd -pl unidbg-android -am
           -Dmaven.test.skip=false -DskipTests=false -DfailIfNoTests=false
-          -Dtest=InvocationOwnedRuntimeTest,GuestThreadJniRuntimeTest test
-
-      - name: Package Java modules
-        run: >-
-          ./mvnw -pl unidbg-android -am -DskipTests
-          -Dmaven.javadoc.skip=true -Dgpg.skip=true package
+          "-Dtest=InvocationOwnedRuntimeTest,GuestThreadJniRuntimeTest" test
