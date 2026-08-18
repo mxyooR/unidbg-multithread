@@ -285,6 +285,11 @@ The generic tests do not use a target SO, command protocol, readiness graph, or
 application-specific state. A passing model test is therefore evidence for the
 runtime contract it names, not evidence for an unrelated application workflow.
 
+The production-connected examples intentionally cover both AArch32 and
+AArch64 anonymous instruction streams. This demonstrates ABI/register and
+stack ownership coverage without implying that every optional backend or every
+Android kernel thread API has identical semantics.
+
 The current generic contracts include:
 
 - two simultaneous idle callers acquire exactly one backend owner;

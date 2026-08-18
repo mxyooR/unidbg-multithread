@@ -11,6 +11,7 @@ import com.github.unidbg.memory.MemoryBlock;
 import com.github.unidbg.thread.GuestThreadIncarnation;
 import com.github.unidbg.thread.InvocationContext;
 import com.github.unidbg.thread.InvocationOutcome;
+import com.github.unidbg.thread.NativeWorkerTask32;
 import com.github.unidbg.thread.NativeWorkerTask64;
 import com.github.unidbg.thread.RootFaultController;
 import com.github.unidbg.thread.RunContext;
@@ -242,6 +243,65 @@ public class InvocationOwnedRuntimeTest {
             assertSame(pendingException,
                     guestThread.getExecutionState().getPendingException());
 
+            dispatcher.retireGuestThread(guestThread);
+            assertTrue(guestThread.isRetired());
+        } finally {
+            emulator.close();
+        }
+    }
+
+    @Test
+    public void explicitGuestThreadKeepsArm32StackAcrossInvocationCarriers()
+            throws Exception {
+        AndroidEmulator emulator = AndroidEmulatorBuilder.for32Bit()
+                .addBackendFactory(new Unicorn2Factory(true))
+                .setProcessName("persistent-guest-thread-arm32-contract")
+                .build();
+        try {
+            long function = 0x10000000L;
+            Backend backend = emulator.getBackend();
+            backend.mem_map(function, 0x1000, 7);
+            backend.mem_write(function, new byte[]{
+                    0x01, 0x00, (byte) 0x80, (byte) 0xe2, // add r0, r0, #1
+                    0x1e, (byte) 0xff, 0x2f, (byte) 0xe1 // bx lr
+            });
+
+            ThreadDispatcher dispatcher = emulator.getThreadDispatcher();
+            GuestThreadIncarnation guestThread = dispatcher.registerGuestThread(
+                    0x7300, "persistent-arm32-runtime-contract");
+            NativeWorkerTask32 firstTask = new NativeWorkerTask32(
+                    guestThread.getGuestTid(), function, emulator.getReturnAddress(),
+                    false, 10L);
+            dispatcher.bindGuestThread(guestThread, firstTask);
+            try (InvocationOutcome first = dispatcher.runThreadForOutcome(firstTask,
+                    InvocationContext.builder()
+                            .operation("persistent-arm32-first")
+                            .origin("runtime-contract")
+                            .build())) {
+                assertEquals(Long.valueOf(11L), first.getValue());
+            }
+
+            TaskStackEvidence firstStack = firstTask.getStackEvidence();
+            assertNotNull(firstStack);
+            NativeWorkerTask32 secondTask = new NativeWorkerTask32(
+                    guestThread.getGuestTid(), function, emulator.getReturnAddress(),
+                    false, 20L);
+            TaskThreadBinding secondBinding = dispatcher.bindGuestThread(
+                    guestThread, secondTask);
+            assertEquals(2L, secondBinding.getEpoch());
+            try (InvocationOutcome second = dispatcher.runThreadForOutcome(secondTask,
+                    InvocationContext.builder()
+                            .operation("persistent-arm32-second")
+                            .origin("runtime-contract")
+                            .build())) {
+                assertEquals(Long.valueOf(21L), second.getValue());
+            }
+
+            TaskStackEvidence secondStack = secondTask.getStackEvidence();
+            assertNotNull(secondStack);
+            assertSame(firstStack.getBackendAllocationIdentity(),
+                    secondStack.getBackendAllocationIdentity());
+            secondStack.requireCanaryIntact();
             dispatcher.retireGuestThread(guestThread);
             assertTrue(guestThread.isRetired());
         } finally {

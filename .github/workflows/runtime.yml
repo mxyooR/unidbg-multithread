@@ -1,0 +1,50 @@
+name: Generic runtime checks
+
+on:
+  push:
+    branches: [v0.9.8]
+  pull_request:
+    branches: [v0.9.8]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: runtime-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  runtime:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: maven
+
+      - name: Run API runtime tests
+        run: >-
+          ./mvnw -pl unidbg-api
+          -Dmaven.test.skip=false -DskipTests=false -DfailIfNoTests=false test
+
+      - name: Run backend stop-reason tests
+        run: >-
+          ./mvnw -pl backend/unicorn2 -am
+          -Dmaven.test.skip=false -DskipTests=false -DfailIfNoTests=false
+          -Dtest=UnicornStopReasonTest test
+
+      - name: Run generic Android runtime tests
+        run: >-
+          ./mvnw -pl unidbg-android -am
+          -Dmaven.test.skip=false -DskipTests=false -DfailIfNoTests=false
+          -Dtest=InvocationOwnedRuntimeTest,GuestThreadJniRuntimeTest test
+
+      - name: Package Java modules
+        run: >-
+          ./mvnw -pl unidbg-android -am -DskipTests
+          -Dmaven.javadoc.skip=true -Dgpg.skip=true package
