@@ -148,16 +148,19 @@ public class InvocationOwnedRuntimeTest {
             assertNull(failure.get());
             assertEquals(Long.valueOf(42L), secondResult.get());
 
-            first.join(10000);
+            // The loop is intentionally long enough to exercise a handoff;
+            // hosted Windows runners can be substantially slower than a
+            // developer workstation while still making forward progress.
+            first.join(30000);
             assertTrue("first invocation did not resume", !first.isAlive());
             assertEquals(Long.valueOf(0L), firstResult.get());
         } finally {
             if (first != null && first.isAlive()) {
                 emulator.getBackend().emu_stop();
-                first.join(2000);
+                first.join(5000);
             }
             if (second != null && second.isAlive()) {
-                second.join(2000);
+                second.join(5000);
             }
             emulator.close();
         }
