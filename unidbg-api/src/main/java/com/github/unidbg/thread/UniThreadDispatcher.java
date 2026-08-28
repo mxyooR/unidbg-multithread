@@ -1,6 +1,7 @@
 package com.github.unidbg.thread;
 
 import com.github.unidbg.AbstractEmulator;
+import com.github.unidbg.arm.backend.Backend;
 import com.github.unidbg.signal.SigSet;
 import com.github.unidbg.signal.SignalOps;
 import com.github.unidbg.signal.SignalTask;
@@ -24,6 +25,13 @@ import java.util.concurrent.TimeUnit;
 public class UniThreadDispatcher implements ThreadDispatcher {
 
     private static final Log log = LogFactory.getLog(UniThreadDispatcher.class);
+
+    /**
+     * Bounded park interval used when no guest carrier is runnable. Waiter
+     * deadlines are millisecond-based, so this keeps deadline accuracy while
+     * removing the busy spin.
+     */
+    private static final long IDLE_PARK_MILLIS = 1L;
 
     private final List<Task> taskList = new ArrayList<>();
     private final AbstractEmulator<?> emulator;
@@ -166,7 +174,7 @@ public class UniThreadDispatcher implements ThreadDispatcher {
             if (tid == 0 && task.isMainThread()) {
                 signalOps = this;
             }
-            if (tid == task.getId()) {
+            if (tid == task.getId() || (tid > 0 && tid == guestTidOf(task))) {
                 signalOps = task;
             }
             if (signalOps == null) {
@@ -194,6 +202,28 @@ public class UniThreadDispatcher implements ThreadDispatcher {
             break;
         }
         return ret;
+    }
+
+    /**
+     * Resolves the guest TID a carrier actually reports through {@code gettid}.
+     * {@link Task#getId()} is the constructor-supplied id and collides with the
+     * process id for worker carriers, so the runtime assigns a distinct guest
+     * TID. Signal targeting must accept that TID, otherwise bionic's
+     * {@code pthread_kill}/{@code raise} (which pass {@code gettid()}) never
+     * match their own thread.
+     */
+    private int guestTidOf(Task task) {
+        TaskThreadBinding binding = task.getThreadBinding();
+        if (binding == null) {
+            synchronized (this) {
+                binding = threadBindingByTask.get(task);
+            }
+        }
+        if (binding == null) {
+            return -1;
+        }
+        GuestThreadIncarnation thread = binding.getGuestThread();
+        return thread == null ? -1 : thread.getGuestTid();
     }
 
     private RunnableTask runningTask;
@@ -421,8 +451,11 @@ public class UniThreadDispatcher implements ThreadDispatcher {
                 drainExternalTasks();
                 promoteRunnableInvocations();
                 if (taskList.isEmpty()) {
-                    throw new IllegalStateException();
+                    throw new IllegalStateException("dispatcher has no runnable task");
                 }
+                // Tracks whether this pass gave the backend to any carrier. When no
+                // task could be dispatched the loop must park instead of spinning.
+                boolean progressed = false;
                 for (Iterator<Task> iterator = taskList.iterator(); iterator.hasNext(); ) {
                     Task task = iterator.next();
                     if (task.isFinish()) {
@@ -440,6 +473,7 @@ public class UniThreadDispatcher implements ThreadDispatcher {
                         if (log.isDebugEnabled()) {
                             log.debug("Start dispatch task=" + task);
                         }
+                        progressed = true;
                         TaskThreadBinding taskBinding = ensureThreadBinding(task);
                         emulator.set(Task.TASK_KEY, task);
                         this.runningThreadBinding = taskBinding;
@@ -519,7 +553,12 @@ public class UniThreadDispatcher implements ThreadDispatcher {
                                 }
                             }
                         } catch(PopContextException e) {
+                            // popContext already re-saves the task context. The carrier
+                            // lease must still be retired here: leaving it active makes
+                            // the next admitCarrier call fail and kills every in-flight
+                            // invocation through failInvocations.
                             this.runningTask.popContext(emulator);
+                            suspendInvocation(invocation, task);
                         } catch (RuntimeException e) {
                             if (invocation != null) {
                                 retireInvocationCarrier(invocation);
@@ -577,11 +616,14 @@ public class UniThreadDispatcher implements ThreadDispatcher {
                     return mainCompleted ? mainResult : null;
                 }
 
-                if (log.isDebugEnabled()) {
-                    try {
-                        TimeUnit.SECONDS.sleep(1);
-                    } catch (InterruptedException ignored) {
-                    }
+                if (!progressed) {
+                    // No carrier could be admitted this pass. Every waiter is either
+                    // polling guest memory that only another guest task can change, or
+                    // holding a wall-clock deadline. Both are re-checked on the next
+                    // pass, so park briefly instead of spinning a host core at 100%.
+                    // submitExternalTask/addThread notifyAll, so a foreign submission
+                    // still wakes the loop immediately.
+                    awaitDispatchProgress();
                 }
             }
         } catch (RuntimeException | Error e) {
@@ -650,6 +692,24 @@ public class UniThreadDispatcher implements ThreadDispatcher {
         }
         dispatchExiting = true;
         return true;
+    }
+
+    /**
+     * Parks the dispatch loop for a bounded interval when no carrier could be
+     * admitted. Waiters poll guest memory or a wall-clock deadline, so the loop
+     * must re-check them; a short wait keeps that responsive without burning a
+     * host core. Any submission calls notifyAll and wakes the loop at once.
+     */
+    private synchronized void awaitDispatchProgress() {
+        if (!externalTaskQueue.isEmpty() || dispatchExiting) {
+            return;
+        }
+        try {
+            wait(IDLE_PARK_MILLIS);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new IllegalStateException("interrupted while waiting for guest progress", e);
+        }
     }
 
     private void awaitDispatchExit() {
@@ -884,8 +944,22 @@ public class UniThreadDispatcher implements ThreadDispatcher {
         if (!isDispatchingOnOtherThread()) {
             return;
         }
+        Backend backend = emulator.getBackend();
+        if (!backend.supportsStopReason()) {
+            // Without an exact stop reason the emulator cannot tell a mid-run
+            // interruption from a natural return: AbstractEmulator falls back to
+            // NORMAL and would publish whatever is left in the return register as
+            // the invocation result. Skipping the stop costs latency (the current
+            // carrier keeps the backend until it yields on its own) but never
+            // corrupts an outcome.
+            if (log.isDebugEnabled()) {
+                log.debug("skip backend handoff request: " + backend.getClass().getSimpleName()
+                        + " does not report an exact stop reason");
+            }
+            return;
+        }
         try {
-            emulator.getBackend().emu_stop();
+            backend.emu_stop();
         } catch (RuntimeException e) {
             log.warn("unable to request backend handoff", e);
         }
