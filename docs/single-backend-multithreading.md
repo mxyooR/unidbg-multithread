@@ -253,7 +253,7 @@ the longer-term thread-semantics goals in the architecture notes:
 | Persistent guest-thread stack allocation and canary evidence | Implemented for managed bindings | `StackRegion` owns logical bounds; `TaskStackEvidence` reads the real backend canary and entry SP; saved CPU context remains task-stored but ownership-checked |
 | Stack-integrity quarantine after canary or bounds failure | Implemented | `StackIntegrityException`, root-fault publication, carrier retirement, and admission rejection are covered by the generic Unicorn2 negative-control test |
 | Full pthread/TCB/TLS, signal, futex-owner, and thread-exit semantics | Not implemented | No claim of complete Android kernel or Bionic thread emulation |
-| Uniform behavior across optional native backends | Not claimed | Exact stop evidence is currently verified most directly with Unicorn2 |
+| Uniform behavior across optional native backends | Not claimed | Exact stop evidence is currently verified most directly with Unicorn2. A backend that returns `supportsStopReason() == false` no longer receives a cross-thread stop request, so a handoff is delayed rather than published as a corrupted outcome |
 
 "Implemented" here means the generic contract is present and covered by the
 repository's current tests. It does not mean that every Android thread API or
@@ -268,7 +268,10 @@ instructions. Values less than or equal to zero disable it for that run.
 
 Exact stop-reason and cross-thread stop evidence is currently verified with
 Unicorn2. Custom backends remain source-compatible through no-op capability
-defaults.
+defaults, but a backend whose `supportsStopReason()` is `false` cannot be
+preempted for a handoff: the dispatcher will not interrupt it, because an
+interrupted run cannot be distinguished from a natural return. Foreign
+submissions on such a backend wait until the current carrier yields on its own.
 
 ## Verified contracts
 
@@ -334,6 +337,66 @@ The current generic contracts include:
 - APIs and lifecycle contracts may change as this experimental runtime evolves.
 - Checked-in native binaries are platform-specific and are packaged as-is by
   Maven; the Java build does not rebuild them.
+
+## Known runtime defects
+
+These are confirmed defects in the current code, listed so that an integrator
+can judge the risk instead of inferring safety from the contract tables above.
+They are not the same thing as the scope boundaries in the previous section.
+
+### Guest-visible correctness
+
+- `Emulator.pushContext`/`popContext` use one context stack per emulator, not per
+  guest thread (`AbstractEmulator`). The pthread-create callback patchers
+  (`ClonePatcher32`/`ClonePatcher64`/`ThreadClonePatcher32`) push on that stack
+  while the guest callback runs. If one guest thread yields inside its callback
+  and another guest thread pushes, a later pop can restore the other thread's
+  registers. Affects `ThreadJoinVisitor(true)` only; the default visitor does not
+  save context.
+- A cross-thread `emu_stop()` is dropped when it lands before the owner enters
+  `emu_start`: the Unicorn2 bridge clears `cross_thread_stop_request` on entry,
+  and its only reader is the timeslice hook, which is registered only when the
+  instruction budget is enabled. A guest that runs a long stretch without a
+  syscall or hook can therefore delay a queued handoff until it returns.
+- Waiter deadlines (`NanoSleepWaiter`, `FutexNanoSleepWaiter`) use host
+  wall-clock time. Because only one guest thread runs at a time, a long carrier
+  can push another thread's futex deadline past its expiry while that thread has
+  not executed, producing a spurious `ETIMEDOUT`.
+- `Emulator.close()` does not wait for the dispatch loop. Closing from a second
+  host thread while a carrier is inside the backend destroys the engine under it.
+  `ThreadDispatcher.dispose()` also does not complete pending invocation futures,
+  so a submitter blocked in `InvocationRecord.await()` is not released.
+
+### Runtime hygiene
+
+- The dispatch loop iterates `taskList` without holding the dispatcher monitor
+  while structural mutation is performed under it. This currently holds only
+  because the backend owner is the sole structural mutator; the invariant is
+  implicit and unasserted.
+- Guest `mmap`/`munmap`/`brk` mutate the loader's memory map, which a second host
+  thread can also reach through `Memory.malloc`. This path was not audited in
+  depth and should be treated as unverified rather than safe.
+
+### Fixed in this branch
+
+- A `PopContextException` no longer leaks the carrier lease. Previously the lease
+  stayed active and the next `admitCarrier` call failed, which failed every
+  in-flight invocation through the dispatcher fault path.
+- A natural guest return is no longer reported as a suspend when a foreign thread
+  calls `emu_stop()` concurrently. The guest PC at the return boundary now
+  overrides a concurrently written `EMU_STOP` flag.
+- Signal targeting accepts the guest TID reported by `gettid`, not only
+  `Task.getId()`. Worker carriers receive a distinct runtime TID, so bionic's
+  `raise`/`pthread_kill` previously never matched their own thread.
+- `requestBackendStop()` is skipped on a backend that does not report an exact
+  stop reason. Such a backend could not distinguish a mid-run interruption from a
+  natural return and would publish the interrupted return register as the
+  invocation result. The handoff is now delayed instead of corrupted.
+- The dispatch loop parks briefly when no carrier is runnable, instead of
+  spinning a host core. The previous sleep was enabled only under debug logging.
+- Retired guest-thread incarnations are removed from the run registry. They were
+  retained for the life of the run and made TID allocation scan every thread ever
+  created.
 
 ## Extension boundary
 

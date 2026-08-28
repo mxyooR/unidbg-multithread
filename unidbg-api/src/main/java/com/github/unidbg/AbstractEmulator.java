@@ -403,7 +403,14 @@ public abstract class AbstractEmulator<T extends NewFileIO> implements Emulator<
                 throw new ThreadContextSwitchException().setReason(
                         ThreadContextSwitchException.Reason.TIMESLICE);
             }
-            if (stopReason == BackendStopReason.EMU_STOP) {
+            if (stopReason == BackendStopReason.EMU_STOP && !reachedReturnBoundary(until)) {
+                // A foreign host thread can call emu_stop() in the window between
+                // uc_emu_start returning on a natural guest return and the stop
+                // reason being read back. That overwrites NORMAL with EMU_STOP and
+                // would suspend an invocation that had actually completed, throwing
+                // away its return value. The guest PC is the authority: if it sits
+                // at the return boundary the call returned, whatever the flag says.
+                // The pending handoff is still honoured on the next dispatch pass.
                 if (threadDispatcher instanceof UniThreadDispatcher
                         && ((UniThreadDispatcher) threadDispatcher).shouldYieldCurrentTask()) {
                     throw new ThreadContextSwitchException().setReason(
@@ -457,6 +464,24 @@ public abstract class AbstractEmulator<T extends NewFileIO> implements Emulator<
     /** Runs a foreign-host-thread carrier through the dispatcher-owned backend. */
     protected final Number runThreadForResult(ThreadTask task) {
         return getThreadDispatcher().runThreadForResult(task);
+    }
+
+    /**
+     * Whether the guest PC has reached the run's return boundary, meaning the
+     * emulated call returned normally. Used to tell a real mid-run stop from a
+     * stop flag that was set concurrently with a natural return.
+     */
+    private boolean reachedReturnBoundary(long until) {
+        if (until == 0) {
+            return false;
+        }
+        long pc;
+        if (is32Bit()) {
+            pc = backend.reg_read(ArmConst.UC_ARM_REG_PC).intValue() & 0xfffffffeL;
+            return pc == (until & 0xfffffffeL);
+        }
+        pc = backend.reg_read(Arm64Const.UC_ARM64_REG_PC).longValue();
+        return pc == until;
     }
 
     private boolean enableNativeTimesliceIfNeeded() {

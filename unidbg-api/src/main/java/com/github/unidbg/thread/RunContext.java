@@ -138,6 +138,10 @@ public final class RunContext implements AutoCloseable {
             throw new IllegalStateException("guest thread still has an active task binding");
         }
         thread.retire();
+        // Retired incarnations are no longer runtime identities. Keeping them in
+        // the registry grew without bound and made isActiveTid scan every thread
+        // ever created, so TID allocation degraded as a run progressed.
+        threads.remove(thread.getIncarnationId());
     }
 
     public synchronized List<GuestThreadIncarnation> getGuestThreadsSnapshot() {
